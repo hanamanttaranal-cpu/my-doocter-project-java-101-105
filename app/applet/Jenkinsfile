@@ -1,0 +1,124 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKER_REGISTRY = 'registry.hub.docker.com'
+        DOCKER_CREDENTIALS_ID = 'docker-hub-credentials'
+        APP_NAME = 'mediconnect-pro'
+        MYSQL_ROOT_PASSWORD = 'root'
+    }
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 1, unit: 'HOURS')
+        disableConcurrentBuilds()
+    }
+
+    stages {
+        stage('Initialize & Pull') {
+            steps {
+                echo 'Initializing Jenkins Build workspace...'
+                sh 'java -version'
+                sh 'mvn -version'
+                sh 'node -v'
+                sh 'docker --version'
+            }
+        }
+
+        stage('Backend Tests & Compilation') {
+            parallel {
+                stage('Test Doctor Service') {
+                    steps {
+                        dir('backend/doctor-service') {
+                            sh 'mvn clean test package -DskipTests=false'
+                        }
+                    }
+                }
+                stage('Test Patient Service') {
+                    steps {
+                        dir('backend/patient-service') {
+                            sh 'mvn clean test package -DskipTests=false'
+                        }
+                    }
+                }
+                stage('Test Chat Service') {
+                    steps {
+                        dir('backend/chat-service') {
+                            sh 'mvn clean test package -DskipTests=false'
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Frontend Build') {
+            steps {
+                echo 'Compiling React production build...'
+                sh 'npm install'
+                sh 'npm run build'
+            }
+        }
+
+        stage('Build Docker Images') {
+            steps {
+                script {
+                    echo 'Building Microservice Docker Images locally...'
+                    sh 'docker build -t ${APP_NAME}-doctor:latest -f backend/docker/Dockerfile.doctor backend/doctor-service'
+                    sh 'docker build -t ${APP_NAME}-patient:latest -f backend/docker/Dockerfile.patient backend/patient-service'
+                    sh 'docker build -t ${APP_NAME}-chat:latest -f backend/docker/Dockerfile.chat backend/chat-service'
+                    sh 'docker build -t ${APP_NAME}-frontend:latest -f backend/docker/Dockerfile.frontend .'
+                }
+            }
+        }
+
+        stage('Push to Registry') {
+            when {
+                branch 'main'
+            }
+            steps {
+                script {
+                    echo 'Logging into secure Docker registry...'
+                    withCredentials([usernamePassword(credentialsId: "${DOCKER_CREDENTIALS_ID}", usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASSWORD')]) {
+                        sh 'echo $DOCKER_PASSWORD | docker login -u $DOCKER_USER --password-stdin ${DOCKER_REGISTRY}'
+                        
+                        echo 'Tagging and pushing images...'
+                        sh 'docker tag ${APP_NAME}-doctor:latest ${DOCKER_REGISTRY}/$DOCKER_USER/${APP_NAME}-doctor:${BUILD_NUMBER}'
+                        sh 'docker tag ${APP_NAME}-patient:latest ${DOCKER_REGISTRY}/$DOCKER_USER/${APP_NAME}-patient:${BUILD_NUMBER}'
+                        sh 'docker tag ${APP_NAME}-chat:latest ${DOCKER_REGISTRY}/$DOCKER_USER/${APP_NAME}-chat:${BUILD_NUMBER}'
+                        sh 'docker tag ${APP_NAME}-frontend:latest ${DOCKER_REGISTRY}/$DOCKER_USER/${APP_NAME}-frontend:${BUILD_NUMBER}'
+
+                        sh 'docker push ${DOCKER_REGISTRY}/$DOCKER_USER/${APP_NAME}-doctor:${BUILD_NUMBER}'
+                        sh 'docker push ${DOCKER_REGISTRY}/$DOCKER_USER/${APP_NAME}-patient:${BUILD_NUMBER}'
+                        sh 'docker push ${DOCKER_REGISTRY}/$DOCKER_USER/${APP_NAME}-chat:${BUILD_NUMBER}'
+                        sh 'docker push ${DOCKER_REGISTRY}/$DOCKER_USER/${APP_NAME}-frontend:${BUILD_NUMBER}'
+                    }
+                }
+            }
+        }
+
+        stage('Deploy Platform') {
+            steps {
+                echo 'Deploying MediConnect Pro via Docker Compose...'
+                sh 'docker-compose down'
+                sh 'docker-compose up -d --build'
+                sh 'docker ps'
+                echo 'Application successfully rolled out to environment!'
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'Pipeline completed successfully!'
+            mail to: 'admin@mediconnect.pro',
+                 subject: "Pipeline Success: Build #${BUILD_NUMBER}",
+                 body: "Great news! MediConnect Pro Build #${BUILD_NUMBER} has finished successfully and is deployed."
+        }
+        failure {
+            echo 'Pipeline failed. Check stage logs.'
+            mail to: 'admin@mediconnect.pro',
+                 subject: "Pipeline FAILURE: Build #${BUILD_NUMBER}",
+                 body: "Alert: MediConnect Pro Build #${BUILD_NUMBER} has failed during execution. Inspect Jenkins console output."
+        }
+    }
+}

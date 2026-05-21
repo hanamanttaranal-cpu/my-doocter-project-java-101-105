@@ -1,0 +1,125 @@
+version: '3.8'
+
+services:
+  mysql-db:
+    image: mysql:8.0
+    container_name: mysql-db
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: doctor_platform
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - mediconnect-network
+
+  # Discovery / Eureka Server for Microservices
+  discovery-service:
+    build:
+      context: ./backend/discovery-service
+      dockerfile: Dockerfile
+    container_name: discovery-service
+    ports:
+      - "8761:8761"
+    networks:
+      - mediconnect-network
+    depends_on:
+      - mysql-db
+
+  # Doctor Microservice
+  doctor-service:
+    build:
+      context: ./backend/doctor-service
+      dockerfile: Dockerfile
+    container_name: doctor-service
+    ports:
+      - "8081:8081"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql-db:3306/doctor_platform?useSSL=false&allowPublicKeyRetrieval=true
+      - SPRING_DATASOURCE_USERNAME=root
+      - SPRING_DATASOURCE_PASSWORD=root
+    networks:
+      - mediconnect-network
+    depends_on:
+      - mysql-db
+      - discovery-service
+
+  # Patient & Appointment Microservice
+  patient-service:
+    build:
+      context: ./backend/patient-service
+      dockerfile: Dockerfile
+    container_name: patient-service
+    ports:
+      - "8082:8082"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql-db:3306/doctor_platform?useSSL=false&allowPublicKeyRetrieval=true
+      - SPRING_DATASOURCE_USERNAME=root
+      - SPRING_DATASOURCE_PASSWORD=root
+    networks:
+      - mediconnect-network
+    depends_on:
+      - mysql-db
+      - discovery-service
+
+  # Real-time WebSocket Chat Microservice
+  chat-service:
+    build:
+      context: ./backend/chat-service
+      dockerfile: Dockerfile
+    container_name: chat-service
+    ports:
+      - "8083:8083"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql-db:3306/doctor_platform?useSSL=false&allowPublicKeyRetrieval=true
+      - SPRING_DATASOURCE_USERNAME=root
+      - SPRING_DATASOURCE_PASSWORD=root
+    networks:
+      - mediconnect-network
+    depends_on:
+      - mysql-db
+      - discovery-service
+
+  # React + Vite Frontend Container
+  frontend:
+    build:
+      context: .
+      dockerfile: ./backend/docker/Dockerfile.frontend
+    container_name: mediconnect-frontend
+    ports:
+      - "3000:3000"
+    networks:
+      - mediconnect-network
+    depends_on:
+      - doctor-service
+      - patient-service
+      - chat-service
+
+  # Nginx Gateway & Reverse Proxy
+  nginx-proxy:
+    image: nginx:alpine
+    container_name: nginx-proxy
+    restart: always
+    ports:
+      - "80:80"
+    volumes:
+      - ./backend/docker/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - mediconnect-network
+    depends_on:
+      - frontend
+      - doctor-service
+      - patient-service
+      - chat-service
+
+networks:
+  mediconnect-network:
+    driver: bridge
+
+volumes:
+  mysql_data:
