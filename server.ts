@@ -1,14 +1,10 @@
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from '@google/genai';
 
 dotenv.config();
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const isProd = process.env.NODE_ENV === 'production';
 const PORT = 3000;
@@ -603,9 +599,9 @@ CRITICAL: Never state a final diagnosis, only provide educational insights, sele
     console.log('Vite middleware is attached successfully.');
   } else {
     // Serve static files from compiled dist in production
-    const distPath = path.resolve(__dirname, 'dist');
+    const distPath = path.resolve(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('*', (req, res) => {
+    app.get('*', (_req, res) => {
       res.sendFile(path.resolve(distPath, 'index.html'));
     });
   }
