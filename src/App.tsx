@@ -109,6 +109,7 @@ export default function App() {
   const [symptomInput, setSymptomInput] = useState<string>('');
   const [isTriaging, setIsTriaging] = useState<boolean>(false);
   const [triageResult, setTriageResult] = useState<TriageResult | null>(null);
+  const [triageError, setTriageError] = useState<string | null>(null);
 
   // Booking Modal State
   const [isBookingOpen, setIsBookingOpen] = useState<boolean>(false);
@@ -127,10 +128,15 @@ export default function App() {
   // DevOps File Explorer state
   const [devopsFiles, setDevopsFiles] = useState<any[]>([]);
   const [selectedDevFile, setSelectedDevFile] = useState<any | null>(null);
-  const [expandedFolders, setExpandedFolders] = useState<string[]>(['backend', 'backend/doctor-service', 'backend/doctor-service/src', 'backend/docker']);
+  const [expandedFolders, setExpandedFolders] = useState<string[]>(['k8s', 'database', 'gateway', 'backend']);
 
-  // Admin platform stats state
+  // Admin platform stats & moderation state
   const [adminStats, setAdminStats] = useState<any | null>(null);
+  const [adminModeration, setAdminModeration] = useState<{ doctors: Doctor[]; patients: any[]; feedbacks: any[] }>({
+    doctors: [],
+    patients: [],
+    feedbacks: []
+  });
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Initial Data fetchers
@@ -139,7 +145,13 @@ export default function App() {
     fetchAppointments();
     fetchDevopsFiles();
     fetchAdminStats();
+    fetchAdminModeration();
   }, [user, activePortal]);
+
+  // Re-fetch doctors whenever filters change (avoids stale closures)
+  useEffect(() => {
+    fetchDoctors();
+  }, [specFilter, expFilter, searchQuery]);
 
   useEffect(() => {
     if (activeChatAppointment) {
@@ -164,10 +176,15 @@ export default function App() {
 
   const fetchDoctors = async () => {
     try {
-      const url = `/api/doctors?specialization=${specFilter}&minExp=${expFilter}&query=${searchQuery}`;
+      const params = new URLSearchParams();
+      if (specFilter && specFilter !== 'All') params.set('specialization', specFilter);
+      if (expFilter > 0) params.set('minExp', String(expFilter));
+      if (searchQuery.trim()) params.set('query', searchQuery.trim());
+      const url = `/api/doctors${params.toString() ? `?${params.toString()}` : ''}`;
       const res = await fetch(url);
+      if (!res.ok) return;
       const data = await res.json();
-      setDoctorsList(data);
+      setDoctorsList(Array.isArray(data) ? data : []);
     } catch (e) {
       console.error(e);
     }
@@ -177,8 +194,9 @@ export default function App() {
     if (!user) return;
     try {
       const res = await fetch(`/api/appointments?userId=${user.id}&role=${user.role}`);
+      if (!res.ok) return;
       const data = await res.json();
-      setAppointmentsList(data);
+      setAppointmentsList(Array.isArray(data) ? data : []);
     } catch (e) {
       console.error(e);
     }
@@ -187,8 +205,9 @@ export default function App() {
   const fetchChatMessages = async (aid: number) => {
     try {
       const res = await fetch(`/api/chat?appointmentId=${aid}`);
+      if (!res.ok) return;
       const data = await res.json();
-      setChatMessagesList(data);
+      setChatMessagesList(Array.isArray(data) ? data : []);
     } catch (e) {
       console.error(e);
     }
@@ -197,10 +216,10 @@ export default function App() {
   const fetchDevopsFiles = async () => {
     try {
       const res = await fetch('/api/backend-files');
+      if (!res.ok) return;
       const data = await res.json();
-      setDevopsFiles(data);
-      // Pre-select first file if not selected
-      if (data.length > 0 && !selectedDevFile) {
+      setDevopsFiles(Array.isArray(data) ? data : []);
+      if (Array.isArray(data) && data.length > 0 && !selectedDevFile) {
         setSelectedDevFile(data[0]);
       }
     } catch (e) {
@@ -211,8 +230,24 @@ export default function App() {
   const fetchAdminStats = async () => {
     try {
       const res = await fetch('/api/admin/analytics');
+      if (!res.ok) return;
       const data = await res.json();
       setAdminStats(data);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const fetchAdminModeration = async () => {
+    try {
+      const res = await fetch('/api/admin/moderation');
+      if (!res.ok) return;
+      const data = await res.json();
+      setAdminModeration({
+        doctors: Array.isArray(data.doctors) ? data.doctors : [],
+        patients: Array.isArray(data.patients) ? data.patients : [],
+        feedbacks: Array.isArray(data.feedbacks) ? data.feedbacks : []
+      });
     } catch (e) {
       console.error(e);
     }
@@ -226,6 +261,7 @@ export default function App() {
     }
     setIsTriaging(true);
     setTriageResult(null);
+    setTriageError(null);
     try {
       const res = await fetch('/api/gemini/triage', {
         method: 'POST',
@@ -233,14 +269,18 @@ export default function App() {
         body: JSON.stringify({ symptoms: symptomInput })
       });
       const data = await res.json();
-      if (data.triageResult) {
+      if (res.ok && data.triageResult) {
         setTriageResult(data.triageResult);
         showToast("Gemini AI clinical triage evaluation successfully compiled.");
       } else {
-        showToast("Rate-limited. Falling back to local assessment.");
+        const msg = data.error || "Unable to complete symptom triage.";
+        setTriageError(msg);
+        showToast(msg);
       }
     } catch (err) {
-      showToast("Triage service currently busy. Please retry shortly.");
+      const msg = "Triage service unavailable. Please retry shortly.";
+      setTriageError(msg);
+      showToast(msg);
     } finally {
       setIsTriaging(false);
     }
@@ -324,14 +364,15 @@ export default function App() {
       
       // Update message list
       setChatMessagesList(prev => [...prev, saved]);
-      
-      // Simulate doctor typing & reply
-      setIsDoctorTyping(true);
-      setTimeout(() => {
-        setIsDoctorTyping(false);
-        // Refresh chat messages to pull doctor's automated reply
-        fetchChatMessages(activeChatAppointment.id);
-      }, 2100);
+
+      // Simulate doctor typing & reply only when patient sends message
+      if (user.role !== 'DOCTOR') {
+        setIsDoctorTyping(true);
+        setTimeout(() => {
+          setIsDoctorTyping(false);
+          fetchChatMessages(activeChatAppointment.id);
+        }, 2100);
+      }
 
     } catch (e) {
       console.error(e);
@@ -367,7 +408,22 @@ export default function App() {
       if (res.ok) {
         showToast("Physician license status updated successfully.");
         fetchDoctors();
+        fetchAdminModeration();
         fetchAdminStats();
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleDeleteFeedback = async (feedbackId: number) => {
+    try {
+      const res = await fetch(`/api/admin/feedback/${feedbackId}`, {
+        method: 'DELETE'
+      });
+      if (res.ok) {
+        showToast("Patient review removed.");
+        fetchAdminModeration();
       }
     } catch (e) {
       console.error(e);
@@ -402,11 +458,11 @@ export default function App() {
       );
     }
 
-    const folderId = item.name;
+    const folderId = item.path || item.name;
     const isExpanded = expandedFolders.includes(folderId);
 
     return (
-      <div key={item.name} className="mt-1">
+      <div key={folderId} className="mt-1">
         <div 
           onClick={() => {
             if (isExpanded) {
@@ -429,6 +485,126 @@ export default function App() {
           </div>
         )}
       </div>
+    );
+  };
+
+  const getDoctorAvatar = (doctorId: number) => {
+    const matched = doctorsList.find(d => d.id === doctorId) || adminModeration.doctors.find(d => d.id === doctorId);
+    return matched?.profileImageUrl || "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?auto=format&fit=crop&q=80&w=250";
+  };
+
+  const renderLiveChatPanel = () => {
+    if (!activeChatAppointment) return null;
+    const counterpartyName = user?.role === 'DOCTOR' ? activeChatAppointment.patientName : activeChatAppointment.doctorName;
+    const avatarUrl = getDoctorAvatar(activeChatAppointment.doctorId);
+
+    return (
+      <AnimatePresence>
+        <motion.div
+          initial={{ opacity: 0, y: 30 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-white border border-slate-200 rounded-2xl shadow-xl overflow-hidden grid grid-cols-1 md:grid-cols-3 min-h-[500px]"
+        >
+          <div className="border-r border-slate-100 bg-slate-50 flex flex-col justify-between">
+            <div>
+              <div className="p-4 border-b border-slate-200 bg-white">
+                <h4 className="text-xs font-extrabold text-slate-800 uppercase tracking-widest">Ongoing Clinic Dialogs</h4>
+                <p className="text-[10px] text-slate-400 mt-0.5">Approved clinic communication pathways</p>
+              </div>
+              <div className="p-2 space-y-1">
+                <div className="flex items-center gap-3 p-3 bg-white border border-slate-200/85 rounded-xl">
+                  <img src={avatarUrl} alt={counterpartyName} className="w-9 h-9 rounded-full object-cover" />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-slate-900 truncate">{counterpartyName}</span>
+                      <span className="text-[9px] text-slate-400 font-mono">{activeChatAppointment.date}</span>
+                    </div>
+                    <p className="text-[10px] text-indigo-600 font-extrabold tracking-wide uppercase truncate">{activeChatAppointment.specialization}</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="p-4 border-t border-slate-100 font-mono text-[9px] text-slate-400 uppercase tracking-wider bg-slate-50 flex items-center justify-between">
+              <span>Consultation Channel Active</span>
+              <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+            </div>
+          </div>
+
+          <div className="md:col-span-2 flex flex-col justify-between bg-slate-50">
+            <div className="p-4 bg-white border-b border-slate-200 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <img src={avatarUrl} alt={counterpartyName} className="w-10 h-10 rounded-full object-cover" />
+                <div>
+                  <h4 className="text-xs font-extrabold text-slate-900 flex items-center gap-1.5">
+                    {counterpartyName}
+                    <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-ping"></span>
+                  </h4>
+                  <p className="text-[10px] text-slate-400">Consultation ID: MC-A0{activeChatAppointment.id} | Active Online</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setActiveChatAppointment(null)}
+                className="text-slate-400 hover:text-slate-600 text-xs py-1 px-2.5 bg-slate-100 hover:bg-slate-200 rounded-lg transition cursor-pointer"
+              >
+                Exit Chat
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-3 max-h-[350px]">
+              {chatMessagesList.map((m) => {
+                const isSelf = user ? m.senderId === user.id : m.senderId !== 2;
+                return (
+                  <div
+                    key={m.id}
+                    className={`flex flex-col max-w-[80%] ${isSelf ? 'ml-auto items-end' : 'mr-auto items-start'}`}
+                  >
+                    <span className="text-[9px] font-bold text-slate-400 px-1 mb-0.5">{m.senderName}</span>
+                    <div className={`px-4 py-2.5 rounded-2xl text-xs leading-relaxed ${
+                      !isSelf
+                        ? 'bg-white border border-slate-200 text-slate-800 rounded-tl-none'
+                        : 'bg-emerald-600 text-white rounded-tr-none shadow-sm'
+                    }`}>
+                      {m.text}
+                    </div>
+                    <span className="text-[8px] text-slate-400 font-mono px-1 mt-0.5">{m.timestamp}</span>
+                  </div>
+                );
+              })}
+
+              {isDoctorTyping && (
+                <div className="flex flex-col mr-auto items-start max-w-[80%]">
+                  <span className="text-[9px] font-bold text-slate-400 px-1 mb-0.5">{activeChatAppointment.doctorName}</span>
+                  <div className="px-4 py-2 bg-white border border-slate-200 text-slate-500 rounded-2xl rounded-tl-none text-xs flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce"></span>
+                    <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce delay-100"></span>
+                    <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce delay-200"></span>
+                    <span className="italic text-[10px] text-slate-400 ml-1">Evaluating clinical parameters...</span>
+                  </div>
+                </div>
+              )}
+
+              <div ref={chatBottomRef} />
+            </div>
+
+            <div className="p-4 bg-white border-t border-slate-200 flex gap-2">
+              <input
+                type="text"
+                placeholder={`Write message to ${counterpartyName}...`}
+                value={enteredMessage}
+                onChange={(e) => setEnteredMessage(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleSendMessage(); }}
+                className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              />
+              <button
+                onClick={handleSendMessage}
+                className="p-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl transition cursor-pointer shadow-md shadow-emerald-50"
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        </motion.div>
+      </AnimatePresence>
     );
   };
 
@@ -463,25 +639,25 @@ export default function App() {
           {/* Selector Tabs */}
           <div className="flex items-center flex-wrap gap-1 bg-slate-950 p-1.5 rounded-lg border border-slate-800">
             <button 
-              onClick={() => { setActivePortal('patient'); setUser({ id: 1, fullName: "John Carter", email: "patient@mediconnect.pro", role: "PATIENT", token: "jwt_tok", profileImageUrl: "" }); }}
+              onClick={() => { setActiveChatAppointment(null); setActivePortal('patient'); setUser({ id: 1, fullName: "John Carter", email: "patient@mediconnect.pro", role: "PATIENT", token: "jwt_tok", profileImageUrl: "" }); }}
               className={`text-[11px] px-3 py-1 rounded transition duration-150 font-medium cursor-pointer ${activePortal === 'patient' ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
             >
               🟢 Patient Portal
             </button>
             <button 
-              onClick={() => { setActivePortal('doctor'); setUser({ id: 2, fullName: "Dr. Sarah Jenkins", email: "doctor@mediconnect.pro", role: "DOCTOR", token: "jwt_tok", profileImageUrl: "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?auto=format&fit=crop&q=80&w=250" }); }}
+              onClick={() => { setActiveChatAppointment(null); setActivePortal('doctor'); setUser({ id: 2, fullName: "Dr. Sarah Jenkins", email: "doctor@mediconnect.pro", role: "DOCTOR", token: "jwt_tok", profileImageUrl: "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?auto=format&fit=crop&q=80&w=250" }); }}
               className={`text-[11px] px-3 py-1 rounded transition duration-150 font-medium cursor-pointer ${activePortal === 'doctor' ? 'bg-sky-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
             >
               🔵 Doctor Console
             </button>
             <button 
-              onClick={() => { setActivePortal('admin'); setUser({ id: 3, fullName: "Director Vance", email: "admin@mediconnect.pro", role: "ADMIN", token: "jwt_tok", profileImageUrl: "" }); }}
+              onClick={() => { setActiveChatAppointment(null); setActivePortal('admin'); setUser({ id: 3, fullName: "Director Vance", email: "admin@mediconnect.pro", role: "ADMIN", token: "jwt_tok", profileImageUrl: "" }); }}
               className={`text-[11px] px-3 py-1 rounded transition duration-150 font-medium cursor-pointer ${activePortal === 'admin' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
             >
               🟣 Admin Panel
             </button>
             <button 
-              onClick={() => { setActivePortal('devops'); }}
+              onClick={() => { setActiveChatAppointment(null); setActivePortal('devops'); }}
               className={`text-[11px] px-3 py-1 rounded transition duration-150 font-medium cursor-pointer ${activePortal === 'devops' ? 'bg-violet-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
             >
               🛠️ Spring Boot & DevOps Code
@@ -602,6 +778,14 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Triage error container */}
+              {triageError && (
+                <div className="mt-4 p-3.5 bg-rose-950/60 border border-rose-500/40 rounded-xl text-xs text-rose-200 flex items-center gap-2 font-mono">
+                  <AlertCircle className="w-4 h-4 text-rose-400 flex-shrink-0" />
+                  <span>{triageError}</span>
+                </div>
+              )}
+
               {/* Triage assessment response container */}
               <AnimatePresence>
                 {triageResult && (
@@ -674,7 +858,7 @@ export default function App() {
                     <Filter className="w-3.5 h-3.5" />
                     <select 
                       value={specFilter} 
-                      onChange={(e) => { setSpecFilter(e.target.value); setTimeout(() => fetchDoctors(), 50); }}
+                      onChange={(e) => setSpecFilter(e.target.value)}
                       className="bg-transparent focus:outline-none focus:no-ring font-medium select-none cursor-pointer"
                     >
                       <option value="All">All Specialties</option>
@@ -690,7 +874,7 @@ export default function App() {
                     type="text" 
                     placeholder="Search doctor name..." 
                     value={searchQuery}
-                    onChange={(e) => { setSearchQuery(e.target.value); setTimeout(() => fetchDoctors(), 50); }}
+                    onChange={(e) => setSearchQuery(e.target.value)}
                     className="bg-white border border-slate-200 rounded-lg px-3 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500"
                   />
                 </div>
@@ -828,134 +1012,8 @@ export default function App() {
               </div>
             </div>
 
-            {/* Dynamic Simulated WhatsApp Chat Interface */}
-            <AnimatePresence>
-              {activeChatAppointment && (
-                <motion.div 
-                  initial={{ opacity: 0, y: 30 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="bg-white border border-slate-200 rounded-2xl shadow-xl overflow-hidden grid grid-cols-1 md:grid-cols-3 min-h-[500px]"
-                >
-                  {/* Left Side: Consultation roster list */}
-                  <div className="border-r border-slate-100 bg-slate-50 flex flex-col justify-between">
-                    <div>
-                      <div className="p-4 border-b border-slate-200 bg-white">
-                        <h4 className="text-xs font-extrabold text-slate-800 uppercase tracking-widest">Ongoing Clinic Dialogs</h4>
-                        <p className="text-[10px] text-slate-400 mt-0.5">Approved clinic communication pathways</p>
-                      </div>
-                      
-                      <div className="p-2 space-y-1">
-                        <div className="flex items-center gap-3 p-3 bg-white border border-slate-200/85 rounded-xl cursor-pointer">
-                          <img 
-                            src="https://images.unsplash.com/photo-1559839734-2b71ea197ec2?auto=format&fit=crop&q=80&w=250" 
-                            alt="avatar" 
-                            className="w-9 h-9 rounded-full object-cover"
-                          />
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center justify-between">
-                              <span className="text-xs font-bold text-slate-900 truncate">{activeChatAppointment.doctorName}</span>
-                              <span className="text-[9px] text-slate-400 font-mono">10:17 AM</span>
-                            </div>
-                            <p className="text-[10px] text-indigo-600 font-extrabold tracking-wide uppercase truncate">{activeChatAppointment.specialization}</p>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="p-4 border-t border-slate-100 font-mono text-[9px] text-slate-400 uppercase tracking-wider bg-slate-50 flex items-center justify-between">
-                      <span>Simulated STOMP over WS</span>
-                      <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-                    </div>
-                  </div>
-
-                  {/* Right Side: Chat box dialog */}
-                  <div className="md:col-span-2 flex flex-col justify-between bg-slate-50">
-                    
-                    {/* Header info */}
-                    <div className="p-4 bg-white border-b border-slate-200 flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <img 
-                          src="https://images.unsplash.com/photo-1559839734-2b71ea197ec2?auto=format&fit=crop&q=80&w=250" 
-                          alt="avatar" 
-                          className="w-10 h-10 rounded-full object-cover"
-                        />
-                        <div>
-                          <h4 className="text-xs font-extrabold text-slate-900 flex items-center gap-1.5">
-                            {activeChatAppointment.doctorName}
-                            <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-ping"></span>
-                          </h4>
-                          <p className="text-[10px] text-slate-400">Consultation ID:MC-A0{activeChatAppointment.id} | Active Online</p>
-                        </div>
-                      </div>
-
-                      <button 
-                        onClick={() => setActiveChatAppointment(null)}
-                        className="text-slate-400 hover:text-slate-600 text-xs py-1 px-2.5 bg-slate-100 hover:bg-slate-200 rounded-lg transition"
-                      >
-                        Exit Chat
-                      </button>
-                    </div>
-
-                    {/* Chat dialog logs */}
-                    <div className="flex-1 overflow-y-auto p-4 space-y-3 max-h-[350px]">
-                      {chatMessagesList.map((m) => {
-                        const isDoctor = m.senderId === 2; // Simulated Doctor ID
-                        return (
-                          <div 
-                            key={m.id} 
-                            className={`flex flex-col max-w-[80%] ${isDoctor ? 'mr-auto items-start' : 'ml-auto items-end'}`}
-                          >
-                            <span className="text-[9px] font-bold text-slate-400 px-1 mb-0.5">{m.senderName}</span>
-                            <div className={`px-4 py-2.5 rounded-2xl text-xs leading-relaxed ${
-                              isDoctor 
-                                ? 'bg-white border border-slate-200 text-slate-800 rounded-tl-none' 
-                                : 'bg-emerald-600 text-white rounded-tr-none shadow-sm'
-                            }`}>
-                              {m.text}
-                            </div>
-                            <span className="text-[8px] text-slate-400 font-mono px-1 mt-0.5">{m.timestamp}</span>
-                          </div>
-                        );
-                      })}
-
-                      {/* Doctor typing animation simulation */}
-                      {isDoctorTyping && (
-                        <div className="flex flex-col mr-auto items-start max-w-[80%]">
-                          <span className="text-[9px] font-bold text-slate-400 px-1 mb-0.5">{activeChatAppointment.doctorName}</span>
-                          <div className="px-4 py-2 bg-white border border-slate-200 text-slate-500 rounded-2xl rounded-tl-none text-xs flex items-center gap-1">
-                            <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce"></span>
-                            <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce delay-100"></span>
-                            <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce delay-200"></span>
-                            <span className="italic text-[10px] text-slate-400 ml-1">Evaluating clinical parameters...</span>
-                          </div>
-                        </div>
-                      )}
-                      
-                      <div ref={chatBottomRef} />
-                    </div>
-
-                    {/* Messages dispatch input tool */}
-                    <div className="p-4 bg-white border-t border-slate-200 flex gap-2">
-                      <input 
-                        type="text" 
-                        placeholder="Write standard message to your physician..." 
-                        value={enteredMessage}
-                        onChange={(e) => setEnteredMessage(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === 'Enter') handleSendMessage(); }}
-                        className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                      />
-                      <button
-                        onClick={handleSendMessage}
-                        className="p-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl transition cursor-pointer shadow-md shadow-emerald-50"
-                      >
-                        <Send className="w-4 h-4" />
-                      </button>
-                    </div>
-
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
+            {/* Dynamic Live Chat Interface */}
+            {renderLiveChatPanel()}
 
           </div>
         )}
@@ -1044,6 +1102,39 @@ export default function App() {
                     </div>
                   )}
                 </div>
+
+                {/* Active Approved Consultations with Live Chat Trigger */}
+                <h3 className="text-md font-bold text-slate-900 pt-2 flex items-center gap-1.5">
+                  Active Approved Consultations ({appointmentsList.filter(a => a.status === 'Approved').length})
+                </h3>
+                <div className="space-y-3">
+                  {appointmentsList.filter(a => a.status === 'Approved').length > 0 ? (
+                    appointmentsList.filter(a => a.status === 'Approved').map((apt) => (
+                      <div key={apt.id} className="bg-white border border-slate-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm">
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2">
+                            <h4 className="text-xs font-extrabold text-slate-800">{apt.patientName}</h4>
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200/50">
+                              Approved
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-slate-400 font-mono">Date: {apt.date} | ID: MC-A0{apt.id}</p>
+                          <p className="text-xs text-slate-600 line-clamp-1">{apt.notes}</p>
+                        </div>
+                        <button
+                          onClick={() => setActiveChatAppointment(apt)}
+                          className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-4 py-2 rounded-lg font-medium flex items-center gap-1.5 transition cursor-pointer flex-shrink-0"
+                        >
+                          <MessageSquare className="w-3.5 h-3.5" /> Open Live Chat
+                        </button>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="bg-white border border-slate-200 rounded-xl p-6 text-center text-slate-400 text-xs">
+                      No approved consultations active yet. Approve a pending request above to start chatting.
+                    </div>
+                  )}
+                </div>
               </div>
 
               {/* Right Column: Availability control & rating credentials check */}
@@ -1053,27 +1144,29 @@ export default function App() {
                 <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-sm">
                   <div className="text-center pb-4 border-b border-slate-100">
                     <img 
-                      src="https://images.unsplash.com/photo-1559839734-2b71ea197ec2?auto=format&fit=crop&q=80&w=250" 
+                      src={doctorsList.find(d => d.id === 1)?.profileImageUrl || "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?auto=format&fit=crop&q=80&w=250"} 
                       alt="Sarah Jenkins" 
                       className="w-16 h-16 rounded-full object-cover mx-auto ring-4 ring-sky-50"
                     />
-                    <h4 className="text-xs font-extrabold text-slate-900 mt-2">Dr. Sarah Jenkins</h4>
-                    <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-bold uppercase tracking-widest block w-max mx-auto mt-1">CARDIOLOGIST</span>
+                    <h4 className="text-xs font-extrabold text-slate-900 mt-2">{doctorsList.find(d => d.id === 1)?.fullName || "Dr. Sarah Jenkins"}</h4>
+                    <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-bold uppercase tracking-widest block w-max mx-auto mt-1">
+                      {(doctorsList.find(d => d.id === 1)?.specialization || "CARDIOLOGY").toUpperCase()}
+                    </span>
                   </div>
 
                   <div className="space-y-3.5">
                     <div className="flex items-center justify-between text-xs">
                       <span className="text-slate-500 font-bold uppercase text-[9px] tracking-wider">Availability:</span>
-                      <span className="font-mono text-slate-700 font-medium">Mon-Wed 09:00-15:00</span>
+                      <span className="font-mono text-slate-700 font-medium">{doctorsList.find(d => d.id === 1)?.availabilitySchedule || "Mon, Wed, Fri 09:00 - 15:00"}</span>
                     </div>
                     <div className="flex items-center justify-between text-xs">
                       <span className="text-slate-500 font-bold uppercase text-[9px] tracking-wider">Consultation Fee:</span>
-                      <strong className="text-slate-800">$150.00 / session</strong>
+                      <strong className="text-slate-800">${doctorsList.find(d => d.id === 1)?.consultationFee || 150}.00 / session</strong>
                     </div>
                     <div className="flex items-center justify-between text-xs">
                       <span className="text-slate-500 font-bold uppercase text-[9px] tracking-wider">Clinic Rank:</span>
                       <span className="flex items-center gap-0.5 text-amber-500 font-bold">
-                        ⭐ 4.9 <span className="text-[9px] text-slate-400 font-normal ml-1">(120 reviews)</span>
+                        ⭐ {doctorsList.find(d => d.id === 1)?.rating || 4.9} <span className="text-[9px] text-slate-400 font-normal ml-1">(120 reviews)</span>
                       </span>
                     </div>
                   </div>
@@ -1084,13 +1177,15 @@ export default function App() {
                     <h5 className="text-[10px] font-bold uppercase text-slate-400 tracking-wider">Verification Board</h5>
                     <div className="p-3 bg-emerald-50 rounded-lg text-[11px] text-emerald-800 font-mono border border-emerald-100 leading-normal flex items-start gap-2">
                       <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0 mt-0.5" />
-                      <div>Your cardiothoracic certificates have been validated by Admin Board on 2026-05-21Z. Status: ACTIVE DUTY.</div>
+                      <div>Your cardiothoracic certificates have been validated by Admin Board. Status: ACTIVE DUTY.</div>
                     </div>
                   </div>
                 </div>
               </div>
 
             </div>
+
+            {renderLiveChatPanel()}
 
           </div>
         )}
@@ -1116,31 +1211,31 @@ export default function App() {
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
               <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm space-y-2">
                 <span className="text-[10px] uppercase font-bold tracking-widest text-slate-400">Platform Users Registered</span>
-                <div className="text-2xl font-extrabold text-slate-900">{adminStats?.summary.totalUsers || 3} Users</div>
+                <div className="text-2xl font-extrabold text-slate-900">{adminStats?.summary?.totalUsers ?? 3} Users</div>
                 <p className="text-[9px] text-slate-400 flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full"></span> Real-time MySQL sync active
+                  <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full"></span> Active Directory Sync
                 </p>
               </div>
               <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm space-y-2">
                 <span className="text-[10px] uppercase font-bold tracking-widest text-slate-400">Commissioned Doctors</span>
-                <div className="text-2xl font-extrabold text-slate-900">{doctorsList.length} Doctors</div>
-                <p className="text-[9px] text-slate-400">Across 5 disease specialties</p>
+                <div className="text-2xl font-extrabold text-slate-900">{adminStats?.summary?.activeDoctors ?? doctorsList.length} Active</div>
+                <p className="text-[9px] text-slate-400">{adminModeration.doctors.length || doctorsList.length} total registered</p>
               </div>
               <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm space-y-2">
                 <span className="text-[10px] uppercase font-bold tracking-widest text-slate-400">Total Consultations</span>
-                <div className="text-2xl font-extrabold text-slate-900">{appointmentsList.length} Bookings</div>
-                <p className="text-[9px] text-amber-600 font-bold">2 in active queue</p>
+                <div className="text-2xl font-extrabold text-slate-900">{adminStats?.summary?.totalAppointments ?? appointmentsList.length} Bookings</div>
+                <p className="text-[9px] text-amber-600 font-bold">{appointmentsList.filter(a => a.status === 'Pending').length} in active queue</p>
               </div>
               <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm space-y-2">
                 <span className="text-[10px] uppercase font-bold tracking-widest text-slate-400">System Revenue Gross</span>
                 <div className="text-2xl font-extrabold text-slate-900">
-                  ${appointmentsList.filter(a => a.status === 'Approved').length * 150} USD
+                  ${adminStats?.summary?.totalRevenue ?? (appointmentsList.filter(a => a.status === 'Approved').length * 130)} USD
                 </div>
                 <p className="text-[9px] text-emerald-600 font-medium">Approved clinical fees</p>
               </div>
             </div>
 
-            {/* Dynamic Charts visual placeholders (using pure responsive SVG layout for maximum robustness & aesthetic) */}
+            {/* Dynamic Charts */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               
               <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-3 shadow-sm">
@@ -1149,20 +1244,28 @@ export default function App() {
                   <span className="text-[10px] font-mono text-indigo-500">Weekly count</span>
                 </div>
                 
-                {/* Custom SVG Line Chart */}
                 <div className="h-44 flex items-end justify-between border-b border-l border-slate-200 pb-2 pl-2 pt-4">
-                  {[8, 12, 15, 11, 18, 6, 4].map((v, i) => (
-                    <div key={i} className="flex-1 flex flex-col items-center gap-1.5 h-full justify-end group px-1">
-                      <span className="text-[9px] font-mono text-[10px] font-bold text-indigo-600 opacity-0 group-hover:opacity-100 transition duration-150">{v}</span>
-                      <div 
-                        className="w-full bg-slate-900 group-hover:bg-indigo-600 rounded-t transition-all duration-300"
-                        style={{ height: `${(v / 18) * 100}%` }}
-                      ></div>
-                      <span className="text-[9px] text-slate-400 font-mono">
-                        {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][i]}
-                      </span>
-                    </div>
-                  ))}
+                  {(adminStats?.chartData?.weeklyAppointments ?? [
+                    { day: "Mon", count: 8 },
+                    { day: "Tue", count: 12 },
+                    { day: "Wed", count: 15 },
+                    { day: "Thu", count: 11 },
+                    { day: "Fri", count: 18 },
+                    { day: "Sat", count: 6 },
+                    { day: "Sun", count: 4 }
+                  ]).map((item: any, i: number, arr: any[]) => {
+                    const maxCount = Math.max(...arr.map((x: any) => x.count || 1), 1);
+                    return (
+                      <div key={i} className="flex-1 flex flex-col items-center gap-1.5 h-full justify-end group px-1">
+                        <span className="text-[10px] font-mono font-bold text-indigo-600 opacity-0 group-hover:opacity-100 transition duration-150">{item.count}</span>
+                        <div 
+                          className="w-full bg-slate-900 group-hover:bg-indigo-600 rounded-t transition-all duration-300"
+                          style={{ height: `${(item.count / maxCount) * 100}%` }}
+                        ></div>
+                        <span className="text-[9px] text-slate-400 font-mono">{item.day}</span>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -1172,24 +1275,26 @@ export default function App() {
                   <span className="text-[10px] font-mono text-emerald-500">Verification load</span>
                 </div>
                 
-                {/* Bar display */}
                 <div className="space-y-2.5 h-44 flex flex-col justify-center">
-                  {[
-                    { spec: "Cardiology", count: 3 },
-                    { spec: "Neurology", count: 2 },
-                    { spec: "Dermatology", count: 1 },
-                    { spec: "General Physician", count: 4 }
-                  ].map((v, i) => (
-                    <div key={i} className="space-y-1">
-                      <div className="flex justify-between text-[11px]">
-                        <span className="font-bold text-slate-700">{v.spec}</span>
-                        <span className="font-mono text-slate-500 font-medium">{v.count} clinicians</span>
+                  {(adminStats?.chartData?.specializationDistribution ?? [
+                    { name: "Cardiology", value: 3 },
+                    { name: "Neurology", value: 2 },
+                    { name: "Dermatology", value: 3 },
+                    { name: "General Physician", value: 6 }
+                  ]).map((v: any, i: number, arr: any[]) => {
+                    const maxVal = Math.max(...arr.map((x: any) => x.value || 1), 1);
+                    return (
+                      <div key={i} className="space-y-1">
+                        <div className="flex justify-between text-[11px]">
+                          <span className="font-bold text-slate-700">{v.name}</span>
+                          <span className="font-mono text-slate-500 font-medium">{v.value} clinicians</span>
+                        </div>
+                        <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
+                          <div className="bg-emerald-500 h-full rounded-full" style={{ width: `${(v.value / maxVal) * 100}%` }}></div>
+                        </div>
                       </div>
-                      <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                        <div className="bg-emerald-500 h-full rounded-full" style={{ width: `${(v.count / 4) * 100}%` }}></div>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
 
@@ -1211,7 +1316,7 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {doctorsList.map((doc) => (
+                    {(adminModeration.doctors.length > 0 ? adminModeration.doctors : doctorsList).map((doc) => (
                       <tr key={doc.id} className="hover:bg-slate-50">
                         <td className="p-4 flex items-center gap-2">
                           <img src={doc.profileImageUrl} alt="avatar" className="w-7 h-7 rounded-full object-cover" />
@@ -1229,11 +1334,55 @@ export default function App() {
                                 : "bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100"
                             }`}
                           >
-                            {doc.isBlocked ? "❌ SUSPENDED (Block)" : "✅ ACTIVE LICENSED"}
+                            {doc.isBlocked ? "❌ SUSPENDED (Unblock)" : "✅ ACTIVE LICENSED"}
                           </button>
                         </td>
                       </tr>
                     ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Patient Reviews Moderation */}
+            <div className="space-y-4">
+              <h3 className="text-md font-bold text-slate-900">Patient Feedback & Review Moderation</h3>
+              <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                <table className="w-full text-xs text-left">
+                  <thead className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200">
+                    <tr>
+                      <th className="p-4">Patient</th>
+                      <th className="p-4">Physician</th>
+                      <th className="p-4">Rating</th>
+                      <th className="p-4">Comment</th>
+                      <th className="p-4 text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {adminModeration.feedbacks.length > 0 ? (
+                      adminModeration.feedbacks.map((fb: any) => (
+                        <tr key={fb.id} className="hover:bg-slate-50">
+                          <td className="p-4 font-bold text-slate-800">{fb.patientName}</td>
+                          <td className="p-4 text-indigo-700 font-medium">{fb.doctorName}</td>
+                          <td className="p-4 font-mono">⭐ {fb.rating}/5</td>
+                          <td className="p-4 text-slate-600">{fb.comment}</td>
+                          <td className="p-4 text-right">
+                            <button
+                              onClick={() => handleDeleteFeedback(fb.id)}
+                              className="text-[10px] bg-rose-50 hover:bg-rose-100 text-rose-700 px-2.5 py-1 rounded border border-rose-200 font-bold cursor-pointer"
+                            >
+                              Remove
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={5} className="p-6 text-center text-slate-400">
+                          No patient reviews pending moderation.
+                        </td>
+                      </tr>
+                    )}
                   </tbody>
                 </table>
               </div>

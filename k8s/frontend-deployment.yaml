@@ -1,0 +1,69 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-service
+  namespace: mediconnect
+  labels:
+    app: frontend-service
+spec:
+  ports:
+    - port: 3000
+      targetPort: 3000
+      name: http
+  selector:
+    app: frontend-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-deployment
+  namespace: mediconnect
+  labels:
+    app: frontend-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend-service
+  template:
+    metadata:
+      labels:
+        app: frontend-service
+    spec:
+      containers:
+        - name: frontend-service
+          image: DOCKER_REGISTRY/frontend-service:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: NODE_ENV
+              valueFrom:
+                configMapKeyRef:
+                  name: mediconnect-config
+                  key: NODE_ENV
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mediconnect-secrets
+                  key: GEMINI_API_KEY
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "192Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 20

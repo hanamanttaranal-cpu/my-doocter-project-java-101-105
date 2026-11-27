@@ -1,0 +1,114 @@
+services:
+  mysql-db:
+    build:
+      context: ./database
+      dockerfile: Dockerfile
+    container_name: mediconnect-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: mediconnect_db
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    networks:
+      - mediconnect-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root", "-prootpassword"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  redis-cache:
+    image: redis:7.2-alpine
+    container_name: mediconnect-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - mediconnect-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  doctor-service:
+    build:
+      context: ./backend/doctor-service
+      dockerfile: Dockerfile
+    container_name: doctor-service
+    ports:
+      - "8081:8081"
+    environment:
+      - DATABASE_HOST=mysql-db
+      - DATABASE_PORT=3306
+      - DATABASE_NAME=mediconnect_db
+      - DATABASE_USERNAME=root
+      - DATABASE_PASSWORD=rootpassword
+      - REDIS_HOST=redis-cache
+      - REDIS_PORT=6379
+    depends_on:
+      mysql-db:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+    networks:
+      - mediconnect-network
+
+  appointment-service:
+    build:
+      context: ./backend/appointment-service
+      dockerfile: Dockerfile
+    container_name: appointment-service
+    ports:
+      - "8082:8082"
+    environment:
+      - DATABASE_HOST=mysql-db
+      - DATABASE_PORT=3306
+      - DATABASE_NAME=mediconnect_db
+      - DATABASE_USERNAME=root
+      - DATABASE_PASSWORD=rootpassword
+      - DOCTOR_SERVICE_HOST=doctor-service
+      - DOCTOR_SERVICE_PORT=8081
+    depends_on:
+      mysql-db:
+        condition: service_healthy
+      doctor-service:
+        condition: service_started
+    networks:
+      - mediconnect-network
+
+  frontend-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mediconnect-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    networks:
+      - mediconnect-network
+
+  gateway-service:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    container_name: mediconnect-gateway
+    ports:
+      - "8080:80"
+    depends_on:
+      - doctor-service
+      - appointment-service
+      - frontend-service
+    networks:
+      - mediconnect-network
+
+volumes:
+  mysql-data:
+
+networks:
+  mediconnect-network:
+    driver: bridge

@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 
 dotenv.config();
 
@@ -162,6 +162,11 @@ async function startServer() {
   });
 
   // -------- REST APIS --------
+
+  // 0. Health Check for Docker / AWS EKS Probes
+  app.get('/api/health', (_req, res) => {
+    res.status(200).json({ status: 'UP', service: 'mediconnect-frontend-bff' });
+  });
 
   // 1. JWT and User Login Routing
   app.post('/api/users/login', (req, res) => {
@@ -460,102 +465,88 @@ async function startServer() {
     });
   });
 
-  // 14. Advanced Symptom Triage with Gemini-3.5-flash AI
+  // 14. Advanced Symptom Triage with Gemini AI
   app.post('/api/gemini/triage', async (req, res) => {
     const { symptoms } = req.body;
-    if (!symptoms) {
+    if (!symptoms || !String(symptoms).trim()) {
       return res.status(400).json({ error: "Clinical symptoms declaration is required for triage." });
     }
 
     if (!aiClient) {
-      // Safe high-fidelity sandbox offline triage response in case coordinates key is absent
-      console.log('Gemini client unavailable, issuing elite simulated local clinical lookup triage...');
-      let suggestedSpec = "General Physician";
-      let urgency = "Medium";
-      let details = "Your symptoms of \"" + symptoms + "\" have been assessed against local patterns. It is recommended to schedule a check-up to rule out structural strain or bacterial infection.";
-      
-      if (symptoms.toLowerCase().includes('heart') || symptoms.toLowerCase().includes('chest') || symptoms.toLowerCase().includes('palpitation')) {
-        suggestedSpec = "Cardiology";
-        urgency = "High";
-        details = "Chest discomfort, severe strain, or sustained palpitations need physical assessment. If you develop radiating pain down your shoulder, arm, or jaw, please contact emergency treatment centers right away.";
-      } else if (symptoms.toLowerCase().includes('skin') || symptoms.toLowerCase().includes('mole') || symptoms.toLowerCase().includes('rash') || symptoms.toLowerCase().includes('eczema')) {
-        suggestedSpec = "Dermatology";
-        urgency = "Low";
-        details = "Mild skin flareups or localized itching are typically manageable via topical therapeutics. Schedule a dermatologist check if changes in mole symmetry occur.";
-      } else if (symptoms.toLowerCase().includes('migraine') || symptoms.toLowerCase().includes('headache') || symptoms.toLowerCase().includes('numbness') || symptoms.toLowerCase().includes('dizzy')) {
-        suggestedSpec = "Neurology";
-        urgency = "Medium";
-        details = "Frequent severe headaches, dizziness, or peripheral numbness warrants comprehensive screening of cranial nerves by a certified board neurologist.";
-      } else if (symptoms.toLowerCase().includes('knee') || symptoms.toLowerCase().includes('bone') || symptoms.toLowerCase().includes('joint') || symptoms.toLowerCase().includes('fracture')) {
-        suggestedSpec = "Orthopedics";
-        urgency = "Medium";
-        details = "Joint stress, muscular lesions, inflammation, or skeletal aches require evaluation to prevent degradation. Apply cold compression and avoid weights.";
-      }
-
-      return res.json({
-        triageResult: {
-          specialty: suggestedSpec,
-          urgency: urgency,
-          insights: details,
-          questionsToAsk: [
-            "Are there specific lifestyle changes or foods that trigger these flare-ups?",
-            "What indicators or thresholds should I watch for before requiring emergency care?",
-            "Could some of my stress-markers directly affect these symptoms?"
-          ]
-        }
+      return res.status(503).json({
+        error: "Gemini AI triage requires GEMINI_API_KEY to be configured on the server."
       });
     }
 
     try {
       const triagePrompt = `You are an elite, board-certified medical triage specialist assistant.
 A patient has provided the following symptoms: "${symptoms}".
-Perform a safe, educational medical triage evaluation. Provide your assessment in valid JSON format.
-CRITICAL: Never state a final diagnosis, only provide educational insights, select the best matching clinical specialty from: [Cardiology, Neurology, Dermatology, General Physician, Orthopedics], define an estimated urgency level: [Low, Medium, High], and list EXACTLY 3 helpful questions the patient should prepare to ask their consultant during their online call.
-
-JSON Response Schema structure:
-{
-  "specialty": "The suggested specialization name",
-  "urgency": "Low or Medium or High",
-  "insights": "Detailed, highly protective, friendly educational insight with necessary warning instructions to call emergency services if symptoms turn dramatic",
-  "questionsToAsk": ["Question 1", "Question 2", "Question 3"]
-}
-
-Response MUST be pure, raw JSON string matching the keys and format above, with no decorative markdown wraps outside of standard brackets.`;
+Perform a safe, educational medical triage evaluation.
+CRITICAL: Never state a final diagnosis, only provide educational insights, select the best matching clinical specialty from: [Cardiology, Neurology, Dermatology, General Physician, Orthopedics], define an estimated urgency level: [Low, Medium, High], and list EXACTLY 3 helpful questions the patient should prepare to ask their consultant during their online call.`;
 
       const response = await aiClient.models.generateContent({
-        model: 'gemini-3.5-flash',
+        model: 'gemini-4-hydrogen',
         contents: triagePrompt,
         config: {
-          responseMimeType: 'application/json'
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              specialty: {
+                type: Type.STRING,
+                description: 'Best matching specialty from Cardiology, Neurology, Dermatology, General Physician, Orthopedics'
+              },
+              urgency: {
+                type: Type.STRING,
+                description: 'Low, Medium, or High'
+              },
+              insights: {
+                type: Type.STRING,
+                description: 'Detailed educational insight with warning instructions to call emergency services if symptoms turn severe'
+              },
+              questionsToAsk: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING },
+                description: 'Exactly 3 helpful questions for the patient to ask their doctor'
+              }
+            },
+            required: ['specialty', 'urgency', 'insights', 'questionsToAsk']
+          }
         }
       });
 
-      const responseText = response.text || '{}';
-      const parsed = JSON.parse(responseText.trim());
+      const responseText = (response.text ?? '{}').trim();
+      const parsed = JSON.parse(responseText);
       return res.json({ triageResult: parsed });
     } catch (err: any) {
       console.error('Gemini triage integration error:', err);
-      return res.status(500).json({ error: 'AI Symptom Triage service is temporarily rate-limited.' });
+      const status = err?.status === 429 ? 429 : 500;
+      return res.status(status).json({
+        error: err?.message || 'AI Symptom Triage service failed to process the request.'
+      });
     }
   });
 
-  // 15. Dynamic files scanner to serve to bento file tree
-  app.get('/api/backend-files', (req, res) => {
+  // 15. Dynamic files scanner to serve to DevOps file tree
+  app.get('/api/backend-files', (_req, res) => {
+    const rootDir = process.cwd();
+
     const listFiles = (dir: string): any[] => {
-      let results: any[] = [];
+      const results: any[] = [];
       if (!fs.existsSync(dir)) return results;
-      const list = fs.readdirSync(dir);
+      const list = fs.readdirSync(dir).sort();
       list.forEach((file) => {
+        if (file === 'node_modules' || file === 'target' || file === 'dist') return;
         const fullPath = path.resolve(dir, file);
         const stat = fs.statSync(fullPath);
         if (stat && stat.isDirectory()) {
           results.push({
             name: file,
             type: 'directory',
+            path: path.relative(rootDir, fullPath),
             children: listFiles(fullPath)
           });
         } else {
-          // Read some lines of content for visual preview
           let content = '';
           try {
             content = fs.readFileSync(fullPath, 'utf8');
@@ -563,32 +554,42 @@ Response MUST be pure, raw JSON string matching the keys and format above, with 
           results.push({
             name: file,
             type: 'file',
-            path: fullPath.split('/applet/')[1] || file,
-            content: content
+            path: path.relative(rootDir, fullPath),
+            content
           });
         }
       });
       return results;
     };
 
-    // Gather docker-compose, Jenkinsfile, and backend configs
-    const mockFiles = [
-      {
-        name: 'docker-compose.yml',
+    const readRootFile = (fileName: string) => {
+      const fullPath = path.resolve(rootDir, fileName);
+      return {
+        name: fileName,
         type: 'file',
-        path: 'docker-compose.yml',
-        content: fs.existsSync('/app/applet/docker-compose.yml') ? fs.readFileSync('/app/applet/docker-compose.yml', 'utf8') : ''
-      },
-      {
-        name: 'Jenkinsfile',
-        type: 'file',
-        path: 'Jenkinsfile',
-        content: fs.existsSync('/app/applet/Jenkinsfile') ? fs.readFileSync('/app/applet/Jenkinsfile', 'utf8') : ''
-      },
-      ...listFiles('/app/applet/backend')
+        path: fileName,
+        content: fs.existsSync(fullPath) ? fs.readFileSync(fullPath, 'utf8') : ''
+      };
+    };
+
+    const buildFolderNode = (folderName: string) => ({
+      name: folderName,
+      type: 'directory',
+      path: folderName,
+      children: listFiles(path.resolve(rootDir, folderName))
+    });
+
+    const devopsTree = [
+      readRootFile('docker-compose.yml'),
+      readRootFile('Dockerfile'),
+      readRootFile('Jenkinsfile'),
+      buildFolderNode('k8s'),
+      buildFolderNode('database'),
+      buildFolderNode('gateway'),
+      buildFolderNode('backend')
     ];
 
-    res.json(mockFiles);
+    res.json(devopsTree);
   });
 
   // --------- VITE INTEGRATION FOR PORT 3000 ---------
