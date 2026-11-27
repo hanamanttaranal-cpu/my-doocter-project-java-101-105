@@ -1,111 +1,90 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { 
-  HeartPulse, 
-  Search, 
-  Calendar, 
-  MessageSquare, 
-  Upload, 
-  Shield, 
-  Users, 
-  Activity, 
-  TrendingUp, 
-  Clock, 
-  CheckCircle2, 
-  XCircle, 
-  AlertCircle, 
-  Send, 
-  Sparkles, 
-  Code2, 
-  Terminal, 
-  Folder, 
-  FileCode, 
-  Download, 
-  ChevronRight, 
-  Menu, 
-  Star, 
-  Filter, 
-  User, 
+import {
+  Search,
+  MessageSquare,
+  Upload,
+  Shield,
+  Users,
+  Clock,
+  CheckCircle2,
+  XCircle,
+  AlertCircle,
+  Send,
+  Code2,
+  Terminal,
+  Folder,
+  FileCode,
+  Copy,
   ChevronDown,
   ArrowRight,
   RefreshCw,
-  Mail,
-  Lock
+  Star,
+  Stethoscope,
+  LogOut,
+  X,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import {
+  UserSession,
+  Doctor,
+  Appointment,
+  ChatMessage,
+  TriageResult,
+  DevFileNode,
+} from './types';
+import { DoctorAvatar } from './components/DoctorAvatar';
+import { AuthScreen } from './components/AuthScreen';
 
-// Interfaces mapping to backend Java Models
-interface Doctor {
-  id: number;
-  fullName: string;
-  email: string;
-  specialization: string;
-  yearsOfExperience: number;
-  biography: string;
-  profileImageUrl: string;
-  certificatesUrl: string;
-  rating: number;
-  isBlocked: boolean;
-  availabilitySchedule: string;
-  consultationFee: number;
-}
+type ViewKey = 'auth' | 'patient' | 'doctor' | 'admin' | 'devops';
 
-interface Appointment {
-  id: number;
-  patientId: number;
-  patientName: string;
-  doctorId: number;
-  doctorName: string;
-  specialization: string;
-  date: string;
-  notes: string;
-  status: string;
-  medicalReportUrl: string;
-}
-
-interface ChatMessage {
-  id: number;
-  appointmentId: number;
-  senderId: number;
-  senderName: string;
-  text: string;
-  timestamp: string;
-  type: string;
-}
-
-interface TriageResult {
-  specialty: string;
-  urgency: 'Low' | 'Medium' | 'High';
-  insights: string;
-  questionsToAsk: string[];
-}
+const SESSION_STORAGE_KEY = 'mediconnect_user_session';
 
 export default function App() {
-  // Navigation / Workspace portals selection
-  // PORTALS: 'patient' | 'doctor' | 'admin' | 'devops'
-  const [activePortal, setActivePortal] = useState<'patient' | 'doctor' | 'admin' | 'devops'>('patient');
-  
-  // User Authentication State
-  const [user, setUser] = useState<{ id: number; fullName: string; email: string; role: string; token: string; profileImageUrl: string } | null>({
-    id: 1,
-    fullName: "John Carter",
-    email: "patient@mediconnect.pro",
-    role: "PATIENT",
-    token: "dummy_jwt_token_1",
-    profileImageUrl: ""
+  const [user, setUser] = useState<UserSession | null>(() => {
+    try {
+      const saved = localStorage.getItem(SESSION_STORAGE_KEY);
+      return saved ? (JSON.parse(saved) as UserSession) : null;
+    } catch {
+      return null;
+    }
   });
 
-  // Global Loaded State Lists
+  const [activeView, setActiveView] = useState<ViewKey>(() => {
+    try {
+      const saved = localStorage.getItem(SESSION_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved) as UserSession;
+        if (parsed.role === 'DOCTOR') return 'doctor';
+        if (parsed.role === 'ADMIN') return 'admin';
+        return 'patient';
+      }
+    } catch {
+      // ignore storage errors
+    }
+    return 'auth';
+  });
+
+  const [authInitialMode, setAuthInitialMode] = useState<'login' | 'signup'>('login');
+  const [pendingBookingDoctor, setPendingBookingDoctor] = useState<Doctor | null>(null);
+
+  // Domain Data State
   const [doctorsList, setDoctorsList] = useState<Doctor[]>([]);
   const [appointmentsList, setAppointmentsList] = useState<Appointment[]>([]);
   const [chatMessagesList, setChatMessagesList] = useState<ChatMessage[]>([]);
   const [activeChatAppointment, setActiveChatAppointment] = useState<Appointment | null>(null);
-  
-  // Doctor filtering states
+
+  // Doctor Directory Filters
   const [specFilter, setSpecFilter] = useState<string>('All');
-  const [expFilter, setExpFilter] = useState<number>(0);
   const [searchQuery, setSearchQuery] = useState<string>('');
-  
-  // Symptom Triage State
+
+  // Patient AI Assistant & Symptom Checker State
+  const [aiTab, setAiTab] = useState<'assistant' | 'triage'>('assistant');
+  const [aiMessages, setAiMessages] = useState<{ role: 'user' | 'model'; text: string }[]>([]);
+  const [aiInput, setAiInput] = useState<string>('');
+  const [isAiReplying, setIsAiReplying] = useState<boolean>(false);
+  const [aiChatError, setAiChatError] = useState<string | null>(null);
+  const aiChatBottomRef = useRef<HTMLDivElement>(null);
+
   const [symptomInput, setSymptomInput] = useState<string>('');
   const [isTriaging, setIsTriaging] = useState<boolean>(false);
   const [triageResult, setTriageResult] = useState<TriageResult | null>(null);
@@ -117,41 +96,65 @@ export default function App() {
   const [bookDate, setBookDate] = useState<string>('');
   const [bookNotes, setBookNotes] = useState<string>('');
   const [uploadedFileName, setUploadedFileName] = useState<string>('');
-  const [uploadedUrl, setUploadedUrl] = useState<string>('');
   const [isUploading, setIsUploading] = useState<boolean>(false);
+  const [isBookingSubmitting, setIsBookingSubmitting] = useState<boolean>(false);
 
-  // Chat conversation state
+  // Chat State
   const [enteredMessage, setEnteredMessage] = useState<string>('');
   const [isDoctorTyping, setIsDoctorTyping] = useState<boolean>(false);
   const chatBottomRef = useRef<HTMLDivElement>(null);
 
-  // DevOps File Explorer state
-  const [devopsFiles, setDevopsFiles] = useState<any[]>([]);
-  const [selectedDevFile, setSelectedDevFile] = useState<any | null>(null);
+  // Architecture / DevOps Explorer State
+  const [devopsFiles, setDevopsFiles] = useState<DevFileNode[]>([]);
+  const [selectedDevFile, setSelectedDevFile] = useState<DevFileNode | null>(null);
   const [expandedFolders, setExpandedFolders] = useState<string[]>(['k8s', 'database', 'gateway', 'backend']);
 
-  // Admin platform stats & moderation state
+  // Admin State
   const [adminStats, setAdminStats] = useState<any | null>(null);
-  const [adminModeration, setAdminModeration] = useState<{ doctors: Doctor[]; patients: any[]; feedbacks: any[] }>({
+  const [adminModeration, setAdminModeration] = useState<{
+    doctors: Doctor[];
+    patients: any[];
+    feedbacks: any[];
+  }>({
     doctors: [],
     patients: [],
-    feedbacks: []
+    feedbacks: [],
   });
+
+  // Feedback Toast
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
 
-  // Initial Data fetchers
+  const showToast = (message: string) => {
+    setToastMessage(message);
+    if (toastTimerRef.current) {
+      window.clearTimeout(toastTimerRef.current);
+    }
+    toastTimerRef.current = window.setTimeout(() => {
+      setToastMessage(null);
+    }, 4000);
+  };
+
+  // Sync data when session or view changes
   useEffect(() => {
     fetchDoctors();
-    fetchAppointments();
-    fetchDevopsFiles();
-    fetchAdminStats();
-    fetchAdminModeration();
-  }, [user, activePortal]);
+    if (user) {
+      fetchAppointments();
+    } else {
+      setAppointmentsList([]);
+    }
+    if (activeView === 'devops') {
+      fetchDevopsFiles();
+    }
+    if (activeView === 'admin') {
+      fetchAdminStats();
+      fetchAdminModeration();
+    }
+  }, [user, activeView]);
 
-  // Re-fetch doctors whenever filters change (avoids stale closures)
   useEffect(() => {
     fetchDoctors();
-  }, [specFilter, expFilter, searchQuery]);
+  }, [specFilter, searchQuery]);
 
   useEffect(() => {
     if (activeChatAppointment) {
@@ -165,20 +168,12 @@ export default function App() {
     }
   }, [chatMessagesList, isDoctorTyping]);
 
-  const showToast = (message: string) => {
-    setToastMessage(message);
-    setTimeout(() => {
-      setToastMessage(null);
-    }, 4000);
-  };
-
-  // --- API Integrations ---
+  // --- API Calls ---
 
   const fetchDoctors = async () => {
     try {
       const params = new URLSearchParams();
       if (specFilter && specFilter !== 'All') params.set('specialization', specFilter);
-      if (expFilter > 0) params.set('minExp', String(expFilter));
       if (searchQuery.trim()) params.set('query', searchQuery.trim());
       const url = `/api/doctors${params.toString() ? `?${params.toString()}` : ''}`;
       const res = await fetch(url);
@@ -246,17 +241,73 @@ export default function App() {
       setAdminModeration({
         doctors: Array.isArray(data.doctors) ? data.doctors : [],
         patients: Array.isArray(data.patients) ? data.patients : [],
-        feedbacks: Array.isArray(data.feedbacks) ? data.feedbacks : []
+        feedbacks: Array.isArray(data.feedbacks) ? data.feedbacks : [],
       });
     } catch (e) {
       console.error(e);
     }
   };
 
-  // Run secure Gemini-powered symptom triage
+  // --- Auth Handlers ---
+
+  const handleAuthSuccess = (session: UserSession, isNewAccount = false) => {
+    setUser(session);
+    try {
+      localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+    } catch {
+      // ignore storage errors
+    }
+
+    setActiveChatAppointment(null);
+
+    if (session.role === 'DOCTOR') {
+      setActiveView('doctor');
+      showToast(isNewAccount ? `Account created. Welcome, ${session.fullName}.` : `Welcome back, ${session.fullName}.`);
+      setPendingBookingDoctor(null);
+      return;
+    }
+
+    if (session.role === 'ADMIN') {
+      setActiveView('admin');
+      showToast(`Signed in as ${session.fullName}.`);
+      setPendingBookingDoctor(null);
+      return;
+    }
+
+    setActiveView('patient');
+    showToast(isNewAccount ? `Account created. Welcome, ${session.fullName}!` : `Welcome back, ${session.fullName}.`);
+
+    if (pendingBookingDoctor) {
+      setSelectedDoctor(pendingBookingDoctor);
+      setIsBookingOpen(true);
+      setPendingBookingDoctor(null);
+    }
+  };
+
+  const handleLogout = () => {
+    setUser(null);
+    setActiveChatAppointment(null);
+    setPendingBookingDoctor(null);
+    try {
+      localStorage.removeItem(SESSION_STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+    setAuthInitialMode('login');
+    setActiveView('auth');
+    showToast('You have been logged out.');
+  };
+
+  const openAuthScreen = (mode: 'login' | 'signup') => {
+    setAuthInitialMode(mode);
+    setActiveView('auth');
+  };
+
+  // --- Clinical Workflows ---
+
   const handleAITriage = async () => {
     if (!symptomInput.trim()) {
-      showToast("Please enter some symptoms first.");
+      setTriageError('Please type a brief description of your symptoms first.');
       return;
     }
     setIsTriaging(true);
@@ -266,27 +317,85 @@ export default function App() {
       const res = await fetch('/api/gemini/triage', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symptoms: symptomInput })
+        body: JSON.stringify({ symptoms: symptomInput }),
       });
       const data = await res.json();
       if (res.ok && data.triageResult) {
         setTriageResult(data.triageResult);
-        showToast("Gemini AI clinical triage evaluation successfully compiled.");
       } else {
-        const msg = data.error || "Unable to complete symptom triage.";
-        setTriageError(msg);
-        showToast(msg);
+        setTriageError(data.error || 'Could not analyze symptoms right now. Please try again.');
       }
-    } catch (err) {
-      const msg = "Triage service unavailable. Please retry shortly.";
-      setTriageError(msg);
-      showToast(msg);
+    } catch {
+      setTriageError('Symptom assistant is currently unavailable. You can still browse doctors below.');
     } finally {
       setIsTriaging(false);
     }
   };
 
-  // Cloudinary Simulated File uploader
+  const handleSendAiQuestion = async (overrideText?: string) => {
+    const question = (overrideText ?? aiInput).trim();
+    if (!question || isAiReplying) return;
+
+    const historySnapshot = aiMessages;
+    setAiMessages((prev) => [...prev, { role: 'user', text: question }]);
+    if (!overrideText) setAiInput('');
+    setAiChatError(null);
+    setIsAiReplying(true);
+
+    window.setTimeout(() => {
+      aiChatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, 50);
+
+    try {
+      const res = await fetch('/api/gemini/assistant', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: question,
+          history: historySnapshot,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.reply) {
+        setAiMessages((prev) => [...prev, { role: 'model', text: data.reply }]);
+        window.setTimeout(() => {
+          aiChatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }, 50);
+      } else {
+        setAiChatError(data.error || 'Could not get a reply from the AI Health Assistant.');
+      }
+    } catch {
+      setAiChatError('AI Health Assistant is temporarily unavailable. Please try again.');
+    } finally {
+      setIsAiReplying(false);
+    }
+  };
+
+  const detectMentionedSpecialty = (text: string): string | null => {
+    const specs = ['Cardiology', 'Neurology', 'Dermatology', 'General Physician', 'Orthopedics'];
+    const lower = text.toLowerCase();
+    return specs.find((s) => lower.includes(s.toLowerCase())) || null;
+  };
+
+  const applyTriageFilter = (spec: string) => {
+    setSpecFilter(spec);
+    showToast(`Showing ${spec} specialists.`);
+    const el = document.getElementById('doctor-directory-pane');
+    if (el) el.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const handleBookClick = (doc: Doctor) => {
+    if (!user) {
+      setPendingBookingDoctor(doc);
+      setAuthInitialMode('signup');
+      setActiveView('auth');
+      showToast(`Create an account or log in to book a visit with ${doc.fullName}.`);
+      return;
+    }
+    setSelectedDoctor(doc);
+    setIsBookingOpen(true);
+  };
+
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -296,25 +405,27 @@ export default function App() {
       const res = await fetch('/api/cloudinary/upload', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fileName: file.name, fileType: file.type })
+        body: JSON.stringify({ fileName: file.name, fileType: file.type }),
       });
-      const data = await res.json();
-      setUploadedUrl(data.secure_url);
-      showToast("Attachment secure storage successfully routed via Cloudinary simulation.");
-    } catch (e) {
-      showToast("Attachment upload error.");
+      if (res.ok) {
+        showToast(`Attached "${file.name}" to your request.`);
+      } else {
+        showToast('Unable to attach file.');
+      }
+    } catch {
+      showToast('Unable to attach file.');
     } finally {
       setIsUploading(false);
     }
   };
 
-  // Confirm booking
   const handleConfirmBooking = async () => {
     if (!user || !selectedDoctor) return;
     if (!bookDate) {
-      showToast("Please select a convenient clinical appointment date.");
+      showToast('Please choose a preferred date for your visit.');
       return;
     }
+    setIsBookingSubmitting(true);
     try {
       const res = await fetch('/api/appointments', {
         method: 'POST',
@@ -324,71 +435,69 @@ export default function App() {
           doctorId: selectedDoctor.id,
           date: bookDate,
           notes: bookNotes,
-          medicalReportUrl: uploadedFileName
-        })
+          medicalReportUrl: uploadedFileName,
+        }),
       });
       if (res.ok) {
-        showToast("Appointment consultation request securely dispatched.");
+        showToast(`Visit request sent to ${selectedDoctor.fullName}.`);
         setIsBookingOpen(false);
         setBookDate('');
         setBookNotes('');
         setUploadedFileName('');
-        setUploadedUrl('');
-        fetchAppointments();
+        await fetchAppointments();
+        const el = document.getElementById('appointments-section');
+        if (el) el.scrollIntoView({ behavior: 'smooth' });
+      } else {
+        const data = await res.json();
+        showToast(data.error || 'Could not complete booking.');
       }
-    } catch (e) {
-      console.error(e);
+    } catch {
+      showToast('Network error while submitting booking.');
+    } finally {
+      setIsBookingSubmitting(false);
     }
   };
 
-  // Send message
   const handleSendMessage = async () => {
     if (!enteredMessage.trim() || !activeChatAppointment || !user) return;
-    
-    const patientMsg = {
+    const payload = {
       appointmentId: activeChatAppointment.id,
       senderId: user.id,
       senderName: user.fullName,
-      text: enteredMessage
+      text: enteredMessage.trim(),
     };
-
     setEnteredMessage('');
 
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(patientMsg)
+        body: JSON.stringify(payload),
       });
       const saved = await res.json();
-      
-      // Update message list
-      setChatMessagesList(prev => [...prev, saved]);
+      setChatMessagesList((prev) => [...prev, saved]);
 
-      // Simulate doctor typing & reply only when patient sends message
       if (user.role !== 'DOCTOR') {
         setIsDoctorTyping(true);
-        setTimeout(() => {
+        window.setTimeout(() => {
           setIsDoctorTyping(false);
           fetchChatMessages(activeChatAppointment.id);
         }, 2100);
       }
-
     } catch (e) {
       console.error(e);
     }
   };
 
-  // Doctor approving appointments
-  const handleApproveAppointment = async (aptId: number, status: string) => {
+  const handleApproveAppointment = async (aptId: number, status: 'Approved' | 'Rejected') => {
     try {
       const res = await fetch(`/api/appointments/${aptId}/status`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status })
+        body: JSON.stringify({ status }),
       });
       if (res.ok) {
-        showToast(`Consultation request has been successfully ${status}.`);
+        showToast(status === 'Approved' ? 'Appointment approved. Chat is now open.' : 'Appointment declined.');
         fetchAppointments();
         fetchAdminStats();
       }
@@ -397,16 +506,15 @@ export default function App() {
     }
   };
 
-  // Admin toggling doctor blocking status
   const handleToggleBlockDoctor = async (docId: number) => {
     try {
       const res = await fetch('/api/admin/toggle-doctor', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ doctorId: docId })
+        body: JSON.stringify({ doctorId: docId }),
       });
       if (res.ok) {
-        showToast("Physician license status updated successfully.");
+        showToast('Doctor account status updated.');
         fetchDoctors();
         fetchAdminModeration();
         fetchAdminStats();
@@ -418,11 +526,9 @@ export default function App() {
 
   const handleDeleteFeedback = async (feedbackId: number) => {
     try {
-      const res = await fetch(`/api/admin/feedback/${feedbackId}`, {
-        method: 'DELETE'
-      });
+      const res = await fetch(`/api/admin/feedback/${feedbackId}`, { method: 'DELETE' });
       if (res.ok) {
-        showToast("Patient review removed.");
+        showToast('Review removed.');
         fetchAdminModeration();
       }
     } catch (e) {
@@ -430,31 +536,71 @@ export default function App() {
     }
   };
 
-  // Helper trigger to search doctors suggested by AI
-  const applyAITriageFilter = (spec: string) => {
-    setSpecFilter(spec);
-    showToast(`Filtering directory for ${spec} specialists.`);
-    setTimeout(() => {
-      const dirElement = document.getElementById('doctor-directory-pane');
-      if (dirElement) {
-        dirElement.scrollIntoView({ behavior: 'smooth' });
-      }
-    }, 100);
+  const scrollToSection = (sectionId: string) => {
+    if (activeView !== 'patient') {
+      setActiveView('patient');
+      window.setTimeout(() => {
+        document.getElementById(sectionId)?.scrollIntoView({ behavior: 'smooth' });
+      }, 80);
+    } else {
+      document.getElementById(sectionId)?.scrollIntoView({ behavior: 'smooth' });
+    }
   };
 
-  // Recursively render visual folders for DevOps section
-  const renderDevFolder = (item: any) => {
+  // Resolve current doctor profile when logged in as DOCTOR
+  const activeDoctorProfile =
+    user?.role === 'DOCTOR'
+      ? doctorsList.find(
+          (d) =>
+            d.email.toLowerCase() === user.email.toLowerCase() ||
+            (user.email === 'doctor@mediconnect.pro' && d.id === 1)
+        ) || doctorsList[0]
+      : null;
+
+  // Helper to render status text + icon (never hue-only)
+  const renderAppointmentStatus = (status: string) => {
+    if (status === 'Approved') {
+      return (
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700">
+          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+          Approved
+        </span>
+      );
+    }
+    if (status === 'Rejected') {
+      return (
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-rose-700">
+          <XCircle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+          Declined
+        </span>
+      );
+    }
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-700">
+        <Clock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+        Waiting for approval
+      </span>
+    );
+  };
+
+  // Recursive DevOps file tree renderer
+  const renderDevFolder = (item: DevFileNode) => {
     if (item.type === 'file') {
       const isSelected = selectedDevFile?.path === item.path;
       return (
-        <div 
+        <button
+          type="button"
           key={item.path}
           onClick={() => setSelectedDevFile(item)}
-          className={`flex items-center gap-2 px-3 py-2 rounded-md cursor-pointer transition text-xs font-mono select-none ${isSelected ? 'bg-indigo-600 text-white font-medium' : 'text-slate-300 hover:bg-slate-800'}`}
+          className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-left text-xs font-mono transition-colors cursor-pointer ${
+            isSelected
+              ? 'bg-teal-700 text-white font-medium'
+              : 'text-slate-300 hover:bg-slate-800'
+          }`}
         >
-          <FileCode className="w-3.5 h-3.5 flex-shrink-0" />
+          <FileCode className="w-3.5 h-3.5 shrink-0" />
           <span className="truncate">{item.name}</span>
-        </div>
+        </button>
       );
     }
 
@@ -463,913 +609,1392 @@ export default function App() {
 
     return (
       <div key={folderId} className="mt-1">
-        <div 
-          onClick={() => {
-            if (isExpanded) {
-              setExpandedFolders(prev => prev.filter(f => f !== folderId));
-            } else {
-              setExpandedFolders(prev => [...prev, folderId]);
-            }
-          }}
-          className="flex items-center justify-between px-3 py-1.5 rounded-md text-xs font-medium text-slate-400 hover:bg-slate-800 hover:text-white cursor-pointer select-none"
+        <button
+          type="button"
+          onClick={() =>
+            setExpandedFolders((prev) =>
+              isExpanded ? prev.filter((f) => f !== folderId) : [...prev, folderId]
+            )
+          }
+          className="w-full flex items-center justify-between px-3 py-1.5 rounded-lg text-xs font-medium text-slate-400 hover:bg-slate-800 hover:text-white cursor-pointer"
         >
-          <div className="flex items-center gap-2">
-            <Folder className="w-3.5 h-3.5 text-sky-400 flex-shrink-0" />
-            <span>{item.name}</span>
-          </div>
-          <ChevronDown className={`w-3 h-3 transition-transform ${isExpanded ? '' : '-rotate-90'}`} />
-        </div>
+          <span className="flex items-center gap-2 min-w-0">
+            <Folder className="w-3.5 h-3.5 text-teal-400 shrink-0" />
+            <span className="truncate">{item.name}</span>
+          </span>
+          <ChevronDown className={`w-3.5 h-3.5 transition-transform ${isExpanded ? '' : '-rotate-90'}`} />
+        </button>
         {isExpanded && item.children && (
-          <div className="pl-4 ml-1.5 border-l border-slate-800 mt-0.5 space-y-0.5">
-            {item.children.map((child: any) => renderDevFolder(child))}
+          <div className="pl-3 ml-2 border-l border-slate-800 mt-0.5 space-y-0.5">
+            {item.children.map((child) => renderDevFolder(child))}
           </div>
         )}
       </div>
     );
   };
 
-  const getDoctorAvatar = (doctorId: number) => {
-    const matched = doctorsList.find(d => d.id === doctorId) || adminModeration.doctors.find(d => d.id === doctorId);
-    return matched?.profileImageUrl || "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?auto=format&fit=crop&q=80&w=250";
-  };
-
+  // Shared Live Chat Panel
   const renderLiveChatPanel = () => {
     if (!activeChatAppointment) return null;
-    const counterpartyName = user?.role === 'DOCTOR' ? activeChatAppointment.patientName : activeChatAppointment.doctorName;
-    const avatarUrl = getDoctorAvatar(activeChatAppointment.doctorId);
+    const isDoctorUser = user?.role === 'DOCTOR';
+    const counterpartyName = isDoctorUser
+      ? activeChatAppointment.patientName
+      : activeChatAppointment.doctorName;
 
     return (
-      <AnimatePresence>
-        <motion.div
-          initial={{ opacity: 0, y: 30 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="bg-white border border-slate-200 rounded-2xl shadow-xl overflow-hidden grid grid-cols-1 md:grid-cols-3 min-h-[500px]"
-        >
-          <div className="border-r border-slate-100 bg-slate-50 flex flex-col justify-between">
-            <div>
-              <div className="p-4 border-b border-slate-200 bg-white">
-                <h4 className="text-xs font-extrabold text-slate-800 uppercase tracking-widest">Ongoing Clinic Dialogs</h4>
-                <p className="text-[10px] text-slate-400 mt-0.5">Approved clinic communication pathways</p>
-              </div>
-              <div className="p-2 space-y-1">
-                <div className="flex items-center gap-3 p-3 bg-white border border-slate-200/85 rounded-xl">
-                  <img src={avatarUrl} alt={counterpartyName} className="w-9 h-9 rounded-full object-cover" />
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-slate-900 truncate">{counterpartyName}</span>
-                      <span className="text-[9px] text-slate-400 font-mono">{activeChatAppointment.date}</span>
-                    </div>
-                    <p className="text-[10px] text-indigo-600 font-extrabold tracking-wide uppercase truncate">{activeChatAppointment.specialization}</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div className="p-4 border-t border-slate-100 font-mono text-[9px] text-slate-400 uppercase tracking-wider bg-slate-50 flex items-center justify-between">
-              <span>Consultation Channel Active</span>
-              <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+      <section
+        id="live-chat-panel"
+        className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm"
+      >
+        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between gap-4 bg-white">
+          <div className="flex items-center gap-3 min-w-0">
+            <DoctorAvatar
+              doctorId={activeChatAppointment.doctorId}
+              name={counterpartyName}
+              sizeClass="w-10 h-10"
+            />
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold text-slate-900 truncate">
+                {counterpartyName}
+              </h3>
+              <p className="text-xs text-slate-500 tabular-nums truncate">
+                {activeChatAppointment.specialization} · Visit on {activeChatAppointment.date}
+              </p>
             </div>
           </div>
+          <button
+            type="button"
+            onClick={() => setActiveChatAppointment(null)}
+            className="px-3.5 py-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer whitespace-nowrap shrink-0"
+          >
+            Close Chat
+          </button>
+        </div>
 
-          <div className="md:col-span-2 flex flex-col justify-between bg-slate-50">
-            <div className="p-4 bg-white border-b border-slate-200 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <img src={avatarUrl} alt={counterpartyName} className="w-10 h-10 rounded-full object-cover" />
-                <div>
-                  <h4 className="text-xs font-extrabold text-slate-900 flex items-center gap-1.5">
-                    {counterpartyName}
-                    <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-ping"></span>
-                  </h4>
-                  <p className="text-[10px] text-slate-400">Consultation ID: MC-A0{activeChatAppointment.id} | Active Online</p>
-                </div>
-              </div>
-              <button
-                onClick={() => setActiveChatAppointment(null)}
-                className="text-slate-400 hover:text-slate-600 text-xs py-1 px-2.5 bg-slate-100 hover:bg-slate-200 rounded-lg transition cursor-pointer"
-              >
-                Exit Chat
-              </button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-4 space-y-3 max-h-[350px]">
-              {chatMessagesList.map((m) => {
-                const isSelf = user ? m.senderId === user.id : m.senderId !== 2;
-                return (
+        <div className="p-6 bg-slate-50 space-y-4 max-h-[380px] overflow-y-auto">
+          {chatMessagesList.length === 0 ? (
+            <p className="text-center text-sm text-slate-500 py-8">
+              No messages yet. Say hello to start your consultation.
+            </p>
+          ) : (
+            chatMessagesList.map((m) => {
+              const isSelf = user ? m.senderId === user.id : m.senderId !== 2;
+              return (
+                <div
+                  key={m.id}
+                  className={`flex flex-col max-w-[78%] ${
+                    isSelf ? 'ml-auto items-end' : 'mr-auto items-start'
+                  }`}
+                >
+                  <span className="text-xs text-slate-500 mb-1 px-1">{m.senderName}</span>
                   <div
-                    key={m.id}
-                    className={`flex flex-col max-w-[80%] ${isSelf ? 'ml-auto items-end' : 'mr-auto items-start'}`}
+                    className={`px-4 py-2.5 rounded-2xl text-sm leading-relaxed ${
+                      isSelf
+                        ? 'bg-teal-700 text-white rounded-br-sm'
+                        : 'bg-white border border-slate-200 text-slate-800 rounded-bl-sm'
+                    }`}
                   >
-                    <span className="text-[9px] font-bold text-slate-400 px-1 mb-0.5">{m.senderName}</span>
-                    <div className={`px-4 py-2.5 rounded-2xl text-xs leading-relaxed ${
-                      !isSelf
-                        ? 'bg-white border border-slate-200 text-slate-800 rounded-tl-none'
-                        : 'bg-emerald-600 text-white rounded-tr-none shadow-sm'
-                    }`}>
-                      {m.text}
-                    </div>
-                    <span className="text-[8px] text-slate-400 font-mono px-1 mt-0.5">{m.timestamp}</span>
+                    {m.text}
                   </div>
-                );
-              })}
-
-              {isDoctorTyping && (
-                <div className="flex flex-col mr-auto items-start max-w-[80%]">
-                  <span className="text-[9px] font-bold text-slate-400 px-1 mb-0.5">{activeChatAppointment.doctorName}</span>
-                  <div className="px-4 py-2 bg-white border border-slate-200 text-slate-500 rounded-2xl rounded-tl-none text-xs flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce"></span>
-                    <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce delay-100"></span>
-                    <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce delay-200"></span>
-                    <span className="italic text-[10px] text-slate-400 ml-1">Evaluating clinical parameters...</span>
-                  </div>
+                  <span className="text-[11px] text-slate-400 font-mono tabular-nums mt-1 px-1">
+                    {m.timestamp}
+                  </span>
                 </div>
-              )}
+              );
+            })
+          )}
 
-              <div ref={chatBottomRef} />
+          {isDoctorTyping && (
+            <div className="flex flex-col mr-auto items-start max-w-[78%]">
+              <span className="text-xs text-slate-500 mb-1 px-1">
+                {activeChatAppointment.doctorName}
+              </span>
+              <div className="px-4 py-2.5 bg-white border border-slate-200 text-slate-500 rounded-2xl rounded-bl-sm text-xs">
+                Typing a reply...
+              </div>
             </div>
+          )}
 
-            <div className="p-4 bg-white border-t border-slate-200 flex gap-2">
-              <input
-                type="text"
-                placeholder={`Write message to ${counterpartyName}...`}
-                value={enteredMessage}
-                onChange={(e) => setEnteredMessage(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') handleSendMessage(); }}
-                className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-              />
-              <button
-                onClick={handleSendMessage}
-                className="p-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl transition cursor-pointer shadow-md shadow-emerald-50"
-              >
-                <Send className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
-        </motion.div>
-      </AnimatePresence>
+          <div ref={chatBottomRef} />
+        </div>
+
+        <div className="p-4 bg-white border-t border-slate-200 flex items-center gap-3">
+          <input
+            type="text"
+            placeholder={`Write a message to ${counterpartyName}...`}
+            value={enteredMessage}
+            onChange={(e) => setEnteredMessage(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleSendMessage();
+            }}
+            className="flex-1 h-11 bg-slate-50 border border-slate-300 rounded-xl px-4 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-600 focus:bg-white"
+          />
+          <button
+            type="button"
+            onClick={handleSendMessage}
+            aria-label="Send message"
+            className="h-11 px-4 bg-teal-700 hover:bg-teal-800 text-white text-sm font-medium rounded-xl inline-flex items-center gap-2 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+          >
+            <Send className="w-4 h-4" />
+            Send
+          </button>
+        </div>
+      </section>
     );
   };
 
   return (
-    <div id="mediconnect-main-canvas" className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans">
-      
-      {/* Toast Notification */}
+    <div className="min-h-screen bg-[#F8FAFC] text-slate-900 flex flex-col">
+      {/* Toast Feedback Banner */}
       <AnimatePresence>
         {toastMessage && (
-          <motion.div 
-            initial={{ opacity: 0, y: -20 }}
+          <motion.div
+            initial={{ opacity: 0, y: -12 }}
             animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
-            className="fixed top-24 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-xs px-4 py-3 rounded-lg shadow-xl flex items-center gap-2.5 z-50 border border-slate-700"
+            exit={{ opacity: 0, y: -12 }}
+            transition={{ duration: 0.16 }}
+            className="fixed top-20 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white text-sm px-4 py-2.5 rounded-xl shadow-lg flex items-center gap-2.5 border border-slate-700"
           >
-            <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />
-            <span className="font-medium">{toastMessage}</span>
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span>{toastMessage}</span>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Dynamic Portal Selector Rail */}
-      <div className="w-full bg-slate-900 text-slate-100 py-2.5 px-4 sticky top-0 z-40 border-b border-slate-800 shadow-md">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5">
-            <HeartPulse className="w-5 h-5 text-rose-500 animate-pulse" />
-            <span className="font-semibold text-sm tracking-tight text-white flex items-center gap-1.5">
-              MediConnect <span className="text-xs bg-rose-500/20 text-rose-400 px-1.5 py-0.5 rounded font-bold">PRO</span>
-            </span>
-          </div>
+      {/* Top Bar: Clean 3-Zone Contract */}
+      <header className="sticky top-0 z-40 bg-white border-b border-slate-200">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-8">
+          {/* Zone 1: Single-line Brand Wordmark */}
+          <button
+            type="button"
+            onClick={() => {
+              if (!user) {
+                setActiveView('auth');
+              } else if (user.role === 'DOCTOR') {
+                setActiveView('doctor');
+              } else if (user.role === 'ADMIN') {
+                setActiveView('admin');
+              } else {
+                setActiveView('patient');
+              }
+            }}
+            className="text-lg font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-2"
+          >
+            <Stethoscope className="w-5 h-5 text-teal-700 shrink-0" />
+            MediConnect
+          </button>
 
-          {/* Selector Tabs */}
-          <div className="flex items-center flex-wrap gap-1 bg-slate-950 p-1.5 rounded-lg border border-slate-800">
-            <button 
-              onClick={() => { setActiveChatAppointment(null); setActivePortal('patient'); setUser({ id: 1, fullName: "John Carter", email: "patient@mediconnect.pro", role: "PATIENT", token: "jwt_tok", profileImageUrl: "" }); }}
-              className={`text-[11px] px-3 py-1 rounded transition duration-150 font-medium cursor-pointer ${activePortal === 'patient' ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
-            >
-              🟢 Patient Portal
-            </button>
-            <button 
-              onClick={() => { setActiveChatAppointment(null); setActivePortal('doctor'); setUser({ id: 2, fullName: "Dr. Sarah Jenkins", email: "doctor@mediconnect.pro", role: "DOCTOR", token: "jwt_tok", profileImageUrl: "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?auto=format&fit=crop&q=80&w=250" }); }}
-              className={`text-[11px] px-3 py-1 rounded transition duration-150 font-medium cursor-pointer ${activePortal === 'doctor' ? 'bg-sky-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
-            >
-              🔵 Doctor Console
-            </button>
-            <button 
-              onClick={() => { setActiveChatAppointment(null); setActivePortal('admin'); setUser({ id: 3, fullName: "Director Vance", email: "admin@mediconnect.pro", role: "ADMIN", token: "jwt_tok", profileImageUrl: "" }); }}
-              className={`text-[11px] px-3 py-1 rounded transition duration-150 font-medium cursor-pointer ${activePortal === 'admin' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
-            >
-              🟣 Admin Panel
-            </button>
-            <button 
-              onClick={() => { setActiveChatAppointment(null); setActivePortal('devops'); }}
-              className={`text-[11px] px-3 py-1 rounded transition duration-150 font-medium cursor-pointer ${activePortal === 'devops' ? 'bg-violet-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
-            >
-              🛠️ Spring Boot & DevOps Code
-            </button>
-          </div>
+          {/* Zone 2: 3–4 Clean Single-Line Nav Links */}
+          <nav aria-label="Primary navigation" className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-600">
+            {!user && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setActiveView('patient')}
+                  className={`py-1 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                    activeView === 'patient'
+                      ? 'text-slate-900 underline underline-offset-8 decoration-2 decoration-teal-700'
+                      : 'hover:text-slate-900'
+                  }`}
+                >
+                  Find Doctors
+                </button>
+                <button
+                  type="button"
+                  onClick={() => scrollToSection('symptom-helper')}
+                  className="py-1 whitespace-nowrap shrink-0 cursor-pointer hover:text-slate-900 transition-colors"
+                >
+                  AI Assistant
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openAuthScreen('login')}
+                  className={`py-1 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                    activeView === 'auth'
+                      ? 'text-slate-900 underline underline-offset-8 decoration-2 decoration-teal-700'
+                      : 'hover:text-slate-900'
+                  }`}
+                >
+                  Sign In
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveView('devops')}
+                  className={`py-1 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                    activeView === 'devops'
+                      ? 'text-slate-900 underline underline-offset-8 decoration-2 decoration-teal-700'
+                      : 'hover:text-slate-900'
+                  }`}
+                >
+                  Architecture
+                </button>
+              </>
+            )}
 
-          {/* Active Persona Badge */}
-          <div className="hidden md:flex items-center gap-2 text-slate-300 text-xs">
+            {user?.role === 'PATIENT' && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => scrollToSection('doctor-directory-pane')}
+                  className={`py-1 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                    activeView === 'patient'
+                      ? 'text-slate-900 underline underline-offset-8 decoration-2 decoration-teal-700'
+                      : 'hover:text-slate-900'
+                  }`}
+                >
+                  Find Doctors
+                </button>
+                <button
+                  type="button"
+                  onClick={() => scrollToSection('symptom-helper')}
+                  className="py-1 whitespace-nowrap shrink-0 cursor-pointer hover:text-slate-900 transition-colors"
+                >
+                  AI Assistant
+                </button>
+                <button
+                  type="button"
+                  onClick={() => scrollToSection('appointments-section')}
+                  className="py-1 whitespace-nowrap shrink-0 cursor-pointer hover:text-slate-900 transition-colors"
+                >
+                  My Visits
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveView('devops')}
+                  className={`py-1 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                    activeView === 'devops'
+                      ? 'text-slate-900 underline underline-offset-8 decoration-2 decoration-teal-700'
+                      : 'hover:text-slate-900'
+                  }`}
+                >
+                  Architecture
+                </button>
+              </>
+            )}
+
+            {user?.role === 'DOCTOR' && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setActiveView('doctor')}
+                  className={`py-1 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                    activeView === 'doctor'
+                      ? 'text-slate-900 underline underline-offset-8 decoration-2 decoration-teal-700'
+                      : 'hover:text-slate-900'
+                  }`}
+                >
+                  My Schedule
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveView('patient')}
+                  className={`py-1 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                    activeView === 'patient'
+                      ? 'text-slate-900 underline underline-offset-8 decoration-2 decoration-teal-700'
+                      : 'hover:text-slate-900'
+                  }`}
+                >
+                  Doctor Directory
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveView('devops')}
+                  className={`py-1 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                    activeView === 'devops'
+                      ? 'text-slate-900 underline underline-offset-8 decoration-2 decoration-teal-700'
+                      : 'hover:text-slate-900'
+                  }`}
+                >
+                  Architecture
+                </button>
+              </>
+            )}
+
+            {user?.role === 'ADMIN' && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setActiveView('admin')}
+                  className={`py-1 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                    activeView === 'admin'
+                      ? 'text-slate-900 underline underline-offset-8 decoration-2 decoration-teal-700'
+                      : 'hover:text-slate-900'
+                  }`}
+                >
+                  Admin Overview
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveView('patient')}
+                  className={`py-1 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                    activeView === 'patient'
+                      ? 'text-slate-900 underline underline-offset-8 decoration-2 decoration-teal-700'
+                      : 'hover:text-slate-900'
+                  }`}
+                >
+                  Doctor Directory
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveView('devops')}
+                  className={`py-1 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                    activeView === 'devops'
+                      ? 'text-slate-900 underline underline-offset-8 decoration-2 decoration-teal-700'
+                      : 'hover:text-slate-900'
+                  }`}
+                >
+                  Architecture
+                </button>
+              </>
+            )}
+          </nav>
+
+          {/* Zone 3: 1 Primary Action */}
+          <div className="flex items-center gap-3 shrink-0">
             {user ? (
-              <div className="flex items-center gap-2 bg-slate-800 px-3 py-1 rounded border border-slate-700">
-                <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-ping"></span>
-                <span>Role: <strong className="text-white">{user.role}</strong> ({user.fullName})</span>
+              <div className="flex items-center gap-3">
+                <span className="hidden sm:inline text-sm text-slate-600 whitespace-nowrap max-w-[180px] truncate">
+                  {user.fullName}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="px-4 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  Log Out
+                </button>
               </div>
+            ) : activeView === 'auth' ? (
+              <button
+                type="button"
+                onClick={() => setActiveView('patient')}
+                className="px-4 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg transition-colors cursor-pointer whitespace-nowrap shrink-0"
+              >
+                Browse Doctors
+              </button>
             ) : (
-              <span>Guest Session</span>
+              <button
+                type="button"
+                onClick={() => openAuthScreen('login')}
+                className="px-4 py-2 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-lg transition-colors cursor-pointer whitespace-nowrap shrink-0"
+              >
+                Log In / Sign Up
+              </button>
             )}
           </div>
         </div>
+      </header>
+
+      {/* Non-sticky Mobile Navigation Strip */}
+      <div className="md:hidden bg-white border-b border-slate-200 px-4 py-2.5 flex items-center gap-5 overflow-x-auto text-xs font-medium text-slate-600">
+        {!user && (
+          <>
+            <button type="button" onClick={() => setActiveView('patient')} className="whitespace-nowrap shrink-0 hover:text-slate-900">Find Doctors</button>
+            <button type="button" onClick={() => scrollToSection('symptom-helper')} className="whitespace-nowrap shrink-0 hover:text-slate-900">AI Assistant</button>
+            <button type="button" onClick={() => openAuthScreen('login')} className="whitespace-nowrap shrink-0 hover:text-slate-900">Sign In</button>
+            <button type="button" onClick={() => setActiveView('devops')} className="whitespace-nowrap shrink-0 hover:text-slate-900">Architecture</button>
+          </>
+        )}
+        {user?.role === 'PATIENT' && (
+          <>
+            <button type="button" onClick={() => scrollToSection('doctor-directory-pane')} className="whitespace-nowrap shrink-0 hover:text-slate-900">Find Doctors</button>
+            <button type="button" onClick={() => scrollToSection('symptom-helper')} className="whitespace-nowrap shrink-0 hover:text-slate-900">AI Assistant</button>
+            <button type="button" onClick={() => scrollToSection('appointments-section')} className="whitespace-nowrap shrink-0 hover:text-slate-900">My Visits</button>
+            <button type="button" onClick={() => setActiveView('devops')} className="whitespace-nowrap shrink-0 hover:text-slate-900">Architecture</button>
+          </>
+        )}
+        {user?.role === 'DOCTOR' && (
+          <>
+            <button type="button" onClick={() => setActiveView('doctor')} className="whitespace-nowrap shrink-0 hover:text-slate-900">My Schedule</button>
+            <button type="button" onClick={() => setActiveView('patient')} className="whitespace-nowrap shrink-0 hover:text-slate-900">Doctor Directory</button>
+            <button type="button" onClick={() => setActiveView('devops')} className="whitespace-nowrap shrink-0 hover:text-slate-900">Architecture</button>
+          </>
+        )}
+        {user?.role === 'ADMIN' && (
+          <>
+            <button type="button" onClick={() => setActiveView('admin')} className="whitespace-nowrap shrink-0 hover:text-slate-900">Admin Overview</button>
+            <button type="button" onClick={() => setActiveView('patient')} className="whitespace-nowrap shrink-0 hover:text-slate-900">Doctor Directory</button>
+            <button type="button" onClick={() => setActiveView('devops')} className="whitespace-nowrap shrink-0 hover:text-slate-900">Architecture</button>
+          </>
+        )}
       </div>
 
-      {/* Primary Layout Area */}
-      <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8">
+      {/* Main Content Area */}
+      <main className="flex-1 w-full">
+        {/* AUTH SCREEN (LOGIN & SIGN UP) */}
+        {activeView === 'auth' && (
+          <AuthScreen
+            initialMode={authInitialMode}
+            onAuthSuccess={handleAuthSuccess}
+            onBrowseAsGuest={() => setActiveView('patient')}
+          />
+        )}
 
-        {/* 1. PATIENT PORTAL PORTLET */}
-        {activePortal === 'patient' && (
-          <div className="space-y-8">
-            
-            {/* Header Jumbotron */}
-            <div className="bg-white p-6 sm:p-8 rounded-2xl border border-slate-200/80 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-6 relative overflow-hidden">
-              <div className="absolute top-0 right-0 w-64 h-64 bg-slate-100 rounded-full translate-x-12 -translate-y-12 -z-10 blur-3xl opacity-30"></div>
-              <div className="space-y-2">
-                <div className="inline-flex items-center gap-1.5 bg-emerald-50 text-emerald-700 px-2.5 py-1 rounded-full text-xs font-semibold">
-                  <HeartPulse className="w-3.5 h-3.5" />
-                  Hi, John! Your health overview is active.
-                </div>
-                <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-slate-900">
-                  Welcome to MediConnect Pro
+        {/* PATIENT / GUEST PORTAL */}
+        {activeView === 'patient' && (
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-10">
+            {/* Clear Hero / Summary Section */}
+            <section className="bg-white border border-slate-200 rounded-2xl p-6 sm:p-8 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+              <div className="space-y-2 max-w-2xl">
+                <p className="text-sm font-medium text-teal-700">
+                  {user ? `Signed in as ${user.fullName}` : 'Guest Preview'}
+                </p>
+                <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 text-balance">
+                  {user
+                    ? 'Book a consultation or check your upcoming visits'
+                    : 'Find a verified doctor and book an online consultation'}
                 </h1>
-                <p className="text-sm text-slate-500 max-w-xl">
-                  Consult securely with top certified cardiologists, neurologists, and clinical general practitioners inside our integrated hospital dashboard.
+                <p className="text-sm sm:text-base text-slate-600 leading-relaxed">
+                  {user
+                    ? 'Use the symptom helper if you are unsure which specialist to pick, request an appointment date, and chat once approved.'
+                    : 'Browse available specialists below or sign up in seconds to book a visit and message your doctor.'}
                 </p>
               </div>
-              
-              {/* Quick statistics widgets */}
-              <div className="flex items-center gap-4">
-                <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 flex items-center gap-3">
-                  <div className="p-2.5 bg-emerald-100 text-emerald-700 rounded-lg">
-                    <Calendar className="w-5 h-5" />
+
+              <div className="grid grid-cols-3 gap-4 sm:gap-6 shrink-0 border-t lg:border-t-0 lg:border-l border-slate-200 pt-5 lg:pt-0 lg:pl-8">
+                <div>
+                  <div className="text-2xl font-bold text-slate-900 tabular-nums">
+                    {doctorsList.length}
                   </div>
-                  <div>
-                    <div className="text-lg font-bold text-slate-800">{appointmentsList.length}</div>
-                    <div className="text-[10px] uppercase font-bold tracking-wider text-slate-400">Consultations</div>
-                  </div>
+                  <div className="text-xs text-slate-500 mt-0.5">Available doctors</div>
                 </div>
-                <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 flex items-center gap-3">
-                  <div className="p-2.5 bg-indigo-100 text-indigo-700 rounded-lg">
-                    <Sparkles className="w-5 h-5" />
+                <div>
+                  <div className="text-2xl font-bold text-slate-900 tabular-nums">
+                    {appointmentsList.length}
                   </div>
-                  <div>
-                    <div className="text-lg font-bold text-slate-800">Gemini</div>
-                    <div className="text-[10px] uppercase font-bold tracking-wider text-slate-400">Triage Assist</div>
+                  <div className="text-xs text-slate-500 mt-0.5">Your visits</div>
+                </div>
+                <div>
+                  <div className="text-2xl font-bold text-slate-900 tabular-nums">
+                    {appointmentsList.filter((a) => a.status === 'Approved').length}
                   </div>
+                  <div className="text-xs text-slate-500 mt-0.5">Open chats</div>
                 </div>
               </div>
-            </div>
+            </section>
 
-            {/* AI Patient Symptom Triage Box (Gemini SDK integration) */}
-            <div className="bg-gradient-to-r from-slate-900 to-indigo-950 text-white p-6 rounded-2xl shadow-lg border border-slate-800">
-              <div className="flex items-start justify-between gap-4">
-                <div className="space-y-1.5">
-                  <div className="inline-flex items-center gap-1 bg-white/10 text-indigo-300 px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider">
-                    <Sparkles className="w-3 h-3 text-indigo-400" />
-                    AI Triage Clinical Engine
-                  </div>
-                  <h2 className="text-xl font-bold tracking-tight">AI diagnostic Consultation Assistant</h2>
-                  <p className="text-xs text-slate-300 max-w-xl leading-relaxed">
-                    Powered server-side by <strong>Gemini 3.5 Flash</strong>. Insert details regarding what hurts, where it flares up, any irritation or fever. Instantly receive specialty recommendations and pre-consultation inquiries.
+            {/* Patient AI Health Assistant & Symptom Checker */}
+            <section
+              id="symptom-helper"
+              className="bg-white border border-slate-200 rounded-2xl p-6 sm:p-8 space-y-5"
+            >
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <h2 className="text-lg font-semibold text-slate-900">
+                    Patient AI Health Assistant
+                  </h2>
+                  <p className="text-sm text-slate-600">
+                    Ask health questions in plain language, prepare for your visit, or check which specialist fits your symptoms.
                   </p>
                 </div>
-                <div className="p-3 bg-white/5 rounded-xl border border-white/10 hidden md:block">
-                  <HeartPulse className="w-8 h-8 text-rose-500 animate-pulse" />
-                </div>
-              </div>
 
-              {/* Symptom checker inputs */}
-              <div className="mt-5 space-y-4">
-                <div className="relative">
-                  <textarea 
-                    rows={3}
-                    placeholder="e.g. I have persistent mild chest discomfort and a feeling of irregular heart vibrations during fast evening walks. Is it typical or highly urgent?"
-                    value={symptomInput}
-                    onChange={(e) => setSymptomInput(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none font-mono"
-                  ></textarea>
-                </div>
-                
-                <div className="flex items-center justify-between flex-wrap gap-3">
-                  <span className="text-[10px] text-slate-400 flex items-center gap-1">
-                    <Shield className="w-3 h-3 text-emerald-400" /> Secure Clinical assessment. Always consult certified care paths.
-                  </span>
+                {/* Clean Segmented Toggle */}
+                <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl self-start md:self-auto shrink-0">
                   <button
-                    onClick={handleAITriage}
-                    disabled={isTriaging}
-                    className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs px-5 py-2.5 rounded-xl font-medium flex items-center gap-2 shadow-lg transition duration-150 cursor-pointer"
+                    type="button"
+                    onClick={() => setAiTab('assistant')}
+                    className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap ${
+                      aiTab === 'assistant'
+                        ? 'bg-white text-slate-900 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
                   >
-                    {isTriaging ? (
-                      <>
-                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                        Analyzing Clinical Indicators...
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="w-3.5 h-3.5" />
-                        Process Symptom Triage
-                      </>
-                    )}
+                    AI Assistant Chat
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAiTab('triage')}
+                    className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap ${
+                      aiTab === 'triage'
+                        ? 'bg-white text-slate-900 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Symptom Checker
                   </button>
                 </div>
               </div>
 
-              {/* Triage error container */}
-              {triageError && (
-                <div className="mt-4 p-3.5 bg-rose-950/60 border border-rose-500/40 rounded-xl text-xs text-rose-200 flex items-center gap-2 font-mono">
-                  <AlertCircle className="w-4 h-4 text-rose-400 flex-shrink-0" />
-                  <span>{triageError}</span>
-                </div>
-              )}
-
-              {/* Triage assessment response container */}
-              <AnimatePresence>
-                {triageResult && (
-                  <motion.div 
-                    initial={{ opacity: 0, y: 15 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="mt-6 p-5 bg-slate-950/80 border border-indigo-500/30 rounded-xl space-y-4"
-                  >
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs uppercase text-slate-400 font-bold tracking-wider">Suggested Specialty:</span>
-                        <span className="text-xs font-extrabold text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20">{triageResult.specialty}</span>
+              {aiTab === 'assistant' ? (
+                <div className="space-y-4">
+                  {/* Conversation Area */}
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 sm:p-5 space-y-4 max-h-80 overflow-y-auto">
+                    {aiMessages.length === 0 ? (
+                      <div className="space-y-3 py-2">
+                        <p className="text-sm text-slate-600">
+                          Try asking a question or pick one of these common topics:
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          {[
+                            'Which doctor should I see for chest fluttering?',
+                            'How should I prepare for a neurology visit?',
+                            'What questions should I ask about a changing mole?',
+                          ].map((prompt) => (
+                            <button
+                              key={prompt}
+                              type="button"
+                              onClick={() => handleSendAiQuestion(prompt)}
+                              className="px-3.5 py-2 bg-white hover:bg-teal-50 border border-slate-200 hover:border-teal-400 rounded-xl text-xs font-medium text-slate-700 transition-colors cursor-pointer text-left"
+                            >
+                              {prompt}
+                            </button>
+                          ))}
+                        </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs uppercase text-slate-400 font-bold tracking-wider">Estimated Urgency:</span>
-                        <span className={`text-[10px] font-extrabold uppercase tracking-widest px-2.5 py-0.5 rounded-full border ${
-                          triageResult.urgency === 'High' ? 'bg-rose-500/20 text-rose-400 border-rose-500/30' :
-                          triageResult.urgency === 'Medium' ? 'bg-amber-500/20 text-amber-400 border-amber-500/30' :
-                          'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
-                        }`}>
-                          {triageResult.urgency}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="space-y-1">
-                      <h4 className="text-xs font-semibold text-slate-300">Detailed Educational Insights</h4>
-                      <p className="text-xs text-slate-300 leading-relaxed font-mono">{triageResult.insights}</p>
-                    </div>
-
-                    <div className="space-y-2">
-                      <h4 className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
-                        <Activity className="w-3.5 h-3.5 text-indigo-400" />
-                        Standard Checklist: 3 Questions to Ask Your Doctor
-                      </h4>
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                        {triageResult.questionsToAsk.map((q, idx) => (
-                          <div key={idx} className="p-3 bg-slate-900 border border-slate-800 rounded-lg text-[11px] text-slate-300 font-mono flex gap-2">
-                            <span className="text-indigo-400 font-bold">0{idx+1}.</span>
-                            <span>{q}</span>
+                    ) : (
+                      aiMessages.map((msg, idx) => {
+                        const suggestedSpec =
+                          msg.role === 'model' ? detectMentionedSpecialty(msg.text) : null;
+                        return (
+                          <div
+                            key={idx}
+                            className={`flex flex-col max-w-[85%] ${
+                              msg.role === 'user' ? 'ml-auto items-end' : 'mr-auto items-start'
+                            }`}
+                          >
+                            <span className="text-[11px] font-medium text-slate-500 mb-1 px-1">
+                              {msg.role === 'user' ? user?.fullName || 'You' : 'AI Health Assistant'}
+                            </span>
+                            <div
+                              className={`px-4 py-3 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap ${
+                                msg.role === 'user'
+                                  ? 'bg-teal-700 text-white rounded-br-sm'
+                                  : 'bg-white border border-slate-200 text-slate-800 rounded-bl-sm'
+                              }`}
+                            >
+                              {msg.text}
+                            </div>
+                            {suggestedSpec && (
+                              <button
+                                type="button"
+                                onClick={() => applyTriageFilter(suggestedSpec)}
+                                className="mt-2 px-3 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-800 text-xs font-semibold rounded-lg inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+                              >
+                                Show {suggestedSpec} Doctors
+                                <ArrowRight className="w-3.5 h-3.5" />
+                              </button>
+                            )}
                           </div>
-                        ))}
+                        );
+                      })
+                    )}
+
+                    {isAiReplying && (
+                      <div className="flex flex-col mr-auto items-start">
+                        <span className="text-[11px] font-medium text-slate-500 mb-1 px-1">
+                          AI Health Assistant
+                        </span>
+                        <div className="px-4 py-2.5 bg-white border border-slate-200 text-slate-500 rounded-2xl rounded-bl-sm text-xs inline-flex items-center gap-2">
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin text-teal-700" />
+                          Thinking...
+                        </div>
                       </div>
-                    </div>
-
-                    <div className="flex items-center justify-end pt-2 border-t border-slate-800">
-                      <button
-                        onClick={() => applyAITriageFilter(triageResult.specialty)}
-                        className="text-xs bg-indigo-600/30 text-indigo-300 hover:bg-indigo-600 hover:text-white px-3 py-1.5 rounded-lg border border-indigo-500/20 flex items-center gap-1.5 transition cursor-pointer"
-                      >
-                        Search {triageResult.specialty} Specialists Now <ArrowRight className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
-
-            {/* Doctors Lookup & Book Appointments Directory */}
-            <div id="doctor-directory-pane" className="space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                <div>
-                  <h3 className="text-lg font-bold text-slate-900">Consult Verified Platform Doctors</h3>
-                  <p className="text-xs text-slate-400">Search credentials, reviews, and clinical biodata to request appointment approvals.</p>
-                </div>
-
-                {/* Filter and select settings */}
-                <div className="flex items-center flex-wrap gap-2">
-                  <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-lg px-2.5 py-1 text-xs text-slate-600">
-                    <Filter className="w-3.5 h-3.5" />
-                    <select 
-                      value={specFilter} 
-                      onChange={(e) => setSpecFilter(e.target.value)}
-                      className="bg-transparent focus:outline-none focus:no-ring font-medium select-none cursor-pointer"
-                    >
-                      <option value="All">All Specialties</option>
-                      <option value="Cardiology">Cardiology</option>
-                      <option value="Neurology">Neurology</option>
-                      <option value="Dermatology">Dermatology</option>
-                      <option value="General Physician">General Physician</option>
-                      <option value="Orthopedics">Orthopedics</option>
-                    </select>
+                    )}
+                    <div ref={aiChatBottomRef} />
                   </div>
 
-                  <input 
-                    type="text" 
-                    placeholder="Search doctor name..." 
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="bg-white border border-slate-200 rounded-lg px-3 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  {aiChatError && (
+                    <div
+                      role="alert"
+                      className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-sm text-rose-800 flex items-start gap-2.5"
+                    >
+                      <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                      <span>{aiChatError}</span>
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="text"
+                      placeholder="Ask about symptoms, lab tests, or which specialist to book..."
+                      value={aiInput}
+                      onChange={(e) => setAiInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') handleSendAiQuestion();
+                      }}
+                      className="flex-1 h-11 bg-slate-50 border border-slate-300 rounded-xl px-4 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-600 focus:bg-white"
+                    />
+                    {aiMessages.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAiMessages([]);
+                          setAiChatError(null);
+                        }}
+                        className="h-11 px-3.5 text-xs font-medium text-slate-600 hover:text-slate-900 cursor-pointer whitespace-nowrap shrink-0"
+                      >
+                        Reset
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleSendAiQuestion()}
+                      disabled={isAiReplying || !aiInput.trim()}
+                      className="h-11 px-5 bg-teal-700 hover:bg-teal-800 disabled:opacity-50 text-white text-sm font-semibold rounded-xl inline-flex items-center gap-2 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                    >
+                      <Send className="w-4 h-4" />
+                      Ask AI
+                    </button>
+                  </div>
+
+                  <p className="text-xs text-slate-500 flex items-center gap-1.5">
+                    <Shield className="w-3.5 h-3.5 text-teal-700 shrink-0" />
+                    For informational guidance only — contact emergency services immediately for urgent symptoms.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <textarea
+                    rows={3}
+                    placeholder="Example: I have had mild chest fluttering during evening walks for the past three days..."
+                    value={symptomInput}
+                    onChange={(e) => setSymptomInput(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl p-4 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-600 focus:bg-white resize-none"
                   />
+
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <span className="inline-flex items-center gap-1.5 text-xs text-slate-500">
+                      <Shield className="w-4 h-4 text-teal-700 shrink-0" />
+                      Educational guidance only — call emergency services for urgent care
+                    </span>
+
+                    <div className="flex items-center gap-3">
+                      {symptomInput && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSymptomInput('');
+                            setTriageResult(null);
+                            setTriageError(null);
+                          }}
+                          className="px-4 py-2 text-sm font-medium text-slate-600 hover:text-slate-900 cursor-pointer"
+                        >
+                          Clear
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={handleAITriage}
+                        disabled={isTriaging}
+                        className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white text-sm font-semibold rounded-xl inline-flex items-center gap-2 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                      >
+                        {isTriaging ? (
+                          <>
+                            <RefreshCw className="w-4 h-4 animate-spin" />
+                            Checking symptoms...
+                          </>
+                        ) : (
+                          <>
+                            Get Specialist Suggestion
+                            <ArrowRight className="w-4 h-4" />
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  {triageError && (
+                    <div
+                      role="alert"
+                      className="p-4 bg-rose-50 border border-rose-200 rounded-xl text-sm text-rose-800 flex items-start gap-2.5"
+                    >
+                      <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                      <span>{triageError}</span>
+                    </div>
+                  )}
+
+                  {triageResult && (
+                    <div className="border-t border-slate-200 pt-5 space-y-4">
+                      <div className="flex flex-wrap items-center justify-between gap-4">
+                        <div className="flex flex-wrap items-center gap-3 text-sm">
+                          <span className="text-slate-500">Suggested specialty:</span>
+                          <strong className="text-slate-900">{triageResult.specialty}</strong>
+                          <span aria-hidden="true" className="text-slate-300">·</span>
+                          <span className="text-slate-500">Urgency:</span>
+                          <span
+                            className={`font-semibold inline-flex items-center gap-1 ${
+                              triageResult.urgency === 'High'
+                                ? 'text-rose-700'
+                                : triageResult.urgency === 'Medium'
+                                ? 'text-amber-700'
+                                : 'text-emerald-700'
+                            }`}
+                          >
+                            <AlertCircle className="w-3.5 h-3.5" />
+                            {triageResult.urgency}
+                          </span>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => applyTriageFilter(triageResult.specialty)}
+                          className="px-4 py-2 bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold rounded-lg inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                        >
+                          Show {triageResult.specialty} Doctors
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      <p className="text-sm text-slate-700 leading-relaxed">
+                        {triageResult.insights}
+                      </p>
+
+                      <div className="space-y-2">
+                        <h3 className="text-sm font-semibold text-slate-900">
+                          Questions you can ask during your visit
+                        </h3>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                          {triageResult.questionsToAsk.map((q, idx) => (
+                            <div
+                              key={idx}
+                              className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-700 flex gap-2.5"
+                            >
+                              <span className="font-mono text-xs font-semibold text-teal-700 mt-0.5 tabular-nums">
+                                0{idx + 1}.
+                              </span>
+                              <span>{q}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </section>
+
+            {/* Doctor Directory */}
+            <section id="doctor-directory-pane" className="space-y-5">
+              <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
+                <div>
+                  <h2 className="text-xl font-bold text-slate-900">Available Doctors</h2>
+                  <p className="text-sm text-slate-600 mt-1">
+                    Compare specialties, hours, and consultation fees before requesting an appointment.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3">
+                  <select
+                    aria-label="Filter by specialty"
+                    value={specFilter}
+                    onChange={(e) => setSpecFilter(e.target.value)}
+                    className="h-10 px-3 bg-white border border-slate-300 rounded-xl text-sm text-slate-800 font-medium focus:outline-none focus:ring-2 focus:ring-teal-600 cursor-pointer"
+                  >
+                    <option value="All">All specialties</option>
+                    <option value="Cardiology">Cardiology</option>
+                    <option value="Neurology">Neurology</option>
+                    <option value="Dermatology">Dermatology</option>
+                    <option value="General Physician">General Physician</option>
+                    <option value="Orthopedics">Orthopedics</option>
+                  </select>
+
+                  <div className="relative">
+                    <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      placeholder="Search doctor or condition..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="h-10 pl-9 pr-4 bg-white border border-slate-300 rounded-xl text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-600 w-64"
+                    />
+                  </div>
                 </div>
               </div>
 
-              {/* Grid listing */}
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-                {doctorsList.length > 0 ? (
-                  doctorsList.map((doc) => (
-                    <div key={doc.id} className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 space-y-4 flex flex-col justify-between">
-                      <div className="space-y-3">
-                        <div className="flex items-center gap-4">
-                          <img 
-                            src={doc.profileImageUrl} 
-                            alt={doc.fullName} 
-                            className="w-12 h-12 rounded-full object-cover ring-2 ring-slate-100"
+              {doctorsList.length > 0 ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                  {doctorsList.map((doc) => (
+                    <article
+                      key={doc.id}
+                      className="bg-white border border-slate-200 rounded-2xl p-6 flex flex-col justify-between gap-5"
+                    >
+                      <div className="space-y-4">
+                        <div className="flex items-start gap-4">
+                          <DoctorAvatar
+                            doctorId={doc.id}
+                            email={doc.email}
+                            name={doc.fullName}
+                            profileImageUrl={doc.profileImageUrl}
+                            sizeClass="w-14 h-14"
                           />
-                          <div>
-                            <h4 className="text-xs font-extrabold text-slate-900 flex items-center gap-1.5">
+                          <div className="min-w-0">
+                            <h3 className="text-base font-semibold text-slate-900 truncate">
                               {doc.fullName}
-                              <span className="text-[9px] bg-sky-50 text-sky-700 px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">BOARD RECENT</span>
-                            </h4>
-                            <div className="text-[10px] text-indigo-600 font-bold tracking-wide uppercase mt-0.5">{doc.specialization}</div>
-                            
-                            {/* Stars rating */}
-                            <div className="flex items-center gap-1 mt-1 text-[10px] text-slate-500">
-                              <Star className="w-3 h-3 text-amber-400 fill-amber-400" />
-                              <strong className="text-slate-800">{doc.rating}</strong> ({doc.yearsOfExperience} Years Exp)
+                            </h3>
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-600 mt-1 tabular-nums">
+                              <span className="font-medium text-teal-700">{doc.specialization}</span>
+                              <span aria-hidden="true">·</span>
+                              <span>{doc.yearsOfExperience} yrs exp</span>
+                              <span aria-hidden="true">·</span>
+                              <span className="inline-flex items-center gap-1 text-slate-800 font-medium">
+                                <Star className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
+                                {doc.rating}
+                              </span>
                             </div>
                           </div>
                         </div>
 
-                        <p className="text-xs text-slate-500 leading-relaxed line-clamp-3">
+                        <p className="text-sm text-slate-600 leading-relaxed line-clamp-3">
                           {doc.biography}
                         </p>
 
-                        <div className="border-t border-slate-100 pt-3 flex items-center justify-between text-[11px] text-slate-600 font-mono">
-                          <span className="flex items-center gap-1 text-slate-500">
-                            <Clock className="w-3.5 h-3.5 text-indigo-500" /> {doc.availabilitySchedule}
+                        <div className="border-t border-slate-100 pt-3 flex items-center justify-between text-xs text-slate-600 tabular-nums">
+                          <span className="inline-flex items-center gap-1.5">
+                            <Clock className="w-3.5 h-3.5 text-slate-400" />
+                            {doc.availabilitySchedule}
                           </span>
-                          <span className="font-extrabold text-slate-900">${doc.consultationFee} fee</span>
+                          <span className="text-sm font-semibold text-slate-900">
+                            ${doc.consultationFee} / visit
+                          </span>
                         </div>
                       </div>
 
                       <button
-                        onClick={() => { setSelectedDoctor(doc); setIsBookingOpen(true); }}
-                        className="w-full bg-slate-900 hover:bg-indigo-600 text-white text-xs py-2 rounded-lg font-medium transition cursor-pointer"
+                        type="button"
+                        onClick={() => handleBookClick(doc)}
+                        className="w-full h-10 bg-teal-700 hover:bg-teal-800 text-white text-sm font-semibold rounded-xl transition-colors cursor-pointer whitespace-nowrap"
                       >
-                        Request Appointment
+                        {user ? 'Book Visit' : 'Sign In to Book'}
                       </button>
-                    </div>
-                  ))
-                ) : (
-                  <div className="col-span-full bg-white border border-slate-200 rounded-xl p-12 text-center text-xs text-slate-400 space-y-2">
-                    <Users className="w-8 h-8 mx-auto text-slate-300" />
-                    <div>No active platform clinicians matched the query.</div>
-                  </div>
-                )}
-              </div>
-            </div>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <div className="bg-white border border-slate-200 rounded-2xl p-12 text-center space-y-3">
+                  <Users className="w-8 h-8 mx-auto text-slate-300" />
+                  <p className="text-sm text-slate-600">
+                    No doctors matched your current filter.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSpecFilter('All');
+                      setSearchQuery('');
+                    }}
+                    className="px-4 py-2 text-xs font-semibold text-teal-700 bg-teal-50 hover:bg-teal-100 rounded-lg cursor-pointer"
+                  >
+                    Reset filters
+                  </button>
+                </div>
+              )}
+            </section>
 
-            {/* Existing Patient Appointments Track List & Live Chat triggers */}
-            <div className="space-y-4">
-              <h3 className="text-lg font-bold text-slate-900">Your Consultations Queue & Chatrooms</h3>
-              
-              <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-                <table className="w-full text-xs text-left">
-                  <thead className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200">
-                    <tr>
-                      <th className="p-4">Physician Consultant</th>
-                      <th className="p-4">Category</th>
-                      <th className="p-4">Desired Date</th>
-                      <th className="p-4">Reports attached</th>
-                      <th className="p-4">Status Code</th>
-                      <th className="p-4 text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {appointmentsList.length > 0 ? (
-                      appointmentsList.map((apt) => (
-                        <tr key={apt.id} className="hover:bg-slate-50">
-                          <td className="p-4 font-extrabold text-slate-800">{apt.doctorName}</td>
-                          <td className="p-4">{apt.specialization}</td>
-                          <td className="p-4 font-mono">{apt.date}</td>
-                          <td className="p-4">
-                            {apt.medicalReportUrl ? (
-                              <span className="text-[10px] bg-slate-100 hover:bg-slate-200 p-1.5 rounded inline-flex items-center gap-1 font-mono text-slate-600">
-                                <FileCode className="w-3.5 h-3.5 text-indigo-500" />
-                                {apt.medicalReportUrl}
-                              </span>
-                            ) : (
-                              <span className="text-[10px] text-slate-400 italic">None attached</span>
-                            )}
-                          </td>
-                          <td className="p-4">
-                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full inline-flex items-center gap-1 ${
-                              apt.status === "Approved" ? "bg-emerald-50 text-emerald-700 border border-emerald-200/50" :
-                              apt.status === "Rejected" ? "bg-rose-50 text-rose-700 border border-rose-200/50" :
-                              "bg-amber-50 text-amber-700 border border-amber-200/50"
-                            }`}>
-                              {apt.status === "Approved" ? <CheckCircle2 className="w-3 h-3 text-emerald-500" /> :
-                               apt.status === "Rejected" ? <XCircle className="w-3 h-3 text-rose-500" /> :
-                               <Clock className="w-3 h-3 text-amber-500" />}
-                              {apt.status}
-                            </span>
-                          </td>
-                          <td className="p-4 text-right">
-                            {apt.status === "Approved" ? (
-                              <button
-                                onClick={() => setActiveChatAppointment(apt)}
-                                className="bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] px-3 py-1.5 rounded-lg font-medium flex items-center gap-1.5 ml-auto transition cursor-pointer"
-                              >
-                                <MessageSquare className="w-3.5 h-3.5" /> Start Live Chat
-                              </button>
-                            ) : (
-                              <button 
-                                disabled
-                                className="bg-slate-100 text-slate-400 text-[10px] px-3 py-1.5 rounded-lg italic cursor-not-allowed ml-auto"
-                              >
-                                Locks till Approval
-                              </button>
-                            )}
+            {/* Your Appointments & Chat */}
+            <section id="appointments-section" className="space-y-4">
+              <div>
+                <h2 className="text-xl font-bold text-slate-900">Your Visits & Messages</h2>
+                <p className="text-sm text-slate-600 mt-1">
+                  Track your appointment requests. Once approved by the doctor, you can open a direct chat.
+                </p>
+              </div>
+
+              {!user ? (
+                <div className="bg-white border border-slate-200 rounded-2xl p-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <h3 className="text-base font-semibold text-slate-900">
+                      Log in to view your appointments
+                    </h3>
+                    <p className="text-sm text-slate-600">
+                      Sign in or create a free patient account to manage visit requests and chat with doctors.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => openAuthScreen('login')}
+                      className="px-4 py-2 text-sm font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl cursor-pointer whitespace-nowrap"
+                    >
+                      Log In
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openAuthScreen('signup')}
+                      className="px-4 py-2 text-sm font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-xl cursor-pointer whitespace-nowrap"
+                    >
+                      Create Account
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="bg-white border border-slate-200 rounded-2xl overflow-x-auto">
+                  <table className="w-full text-sm text-left">
+                    <thead className="bg-slate-50 text-slate-600 text-xs font-semibold border-b border-slate-200">
+                      <tr>
+                        <th className="py-3.5 px-5">Doctor</th>
+                        <th className="py-3.5 px-5">Specialty</th>
+                        <th className="py-3.5 px-5">Date</th>
+                        <th className="py-3.5 px-5">Attached File</th>
+                        <th className="py-3.5 px-5">Status</th>
+                        <th className="py-3.5 px-5 text-right">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {appointmentsList.length > 0 ? (
+                        appointmentsList.map((apt) => (
+                          <tr key={apt.id} className="hover:bg-slate-50/70">
+                            <td className="py-4 px-5 font-semibold text-slate-900">
+                              {apt.doctorName}
+                            </td>
+                            <td className="py-4 px-5 text-slate-600">{apt.specialization}</td>
+                            <td className="py-4 px-5 font-mono text-xs text-slate-700 tabular-nums">
+                              {apt.date}
+                            </td>
+                            <td className="py-4 px-5 text-xs text-slate-600">
+                              {apt.medicalReportUrl ? (
+                                <span className="inline-flex items-center gap-1.5 font-mono text-slate-700">
+                                  <FileCode className="w-3.5 h-3.5 text-teal-700 shrink-0" />
+                                  {apt.medicalReportUrl}
+                                </span>
+                              ) : (
+                                <span className="text-slate-400">None</span>
+                              )}
+                            </td>
+                            <td className="py-4 px-5">{renderAppointmentStatus(apt.status)}</td>
+                            <td className="py-4 px-5 text-right">
+                              {apt.status === 'Approved' ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setActiveChatAppointment(apt)}
+                                  className="px-3.5 py-2 bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold rounded-lg inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+                                >
+                                  <MessageSquare className="w-3.5 h-3.5" />
+                                  Open Chat
+                                </button>
+                              ) : (
+                                <span className="text-xs text-slate-400">
+                                  {apt.status === 'Rejected' ? 'Unavailable' : 'Chat opens after approval'}
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        ))
+                      ) : (
+                        <tr>
+                          <td colSpan={6} className="py-10 px-5 text-center text-sm text-slate-500">
+                            You have no appointments yet. Choose a doctor above to book your first visit.
                           </td>
                         </tr>
-                      ))
-                    ) : (
-                      <tr>
-                        <td colSpan={6} className="p-8 text-center text-slate-400">
-                          No historical consultation bookings found. Search doctors above to secure approvals.
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
 
-            {/* Dynamic Live Chat Interface */}
             {renderLiveChatPanel()}
-
           </div>
         )}
 
-        {/* 2. CLINICIAN / DOCTOR PORTAL WORKSPACE */}
-        {activePortal === 'doctor' && (
-          <div className="space-y-8">
-            
-            {/* Header banner */}
-            <div className="bg-sky-900 text-white p-6 rounded-2xl flex items-center justify-between flex-wrap gap-4 shadow-sm border border-sky-800">
+        {/* DOCTOR CONSOLE */}
+        {activeView === 'doctor' && (
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+            <section className="bg-white border border-slate-200 rounded-2xl p-6 sm:p-8 flex flex-col md:flex-row md:items-center justify-between gap-6">
               <div className="space-y-1.5">
-                <div className="text-[10px] font-bold tracking-widest uppercase bg-white/20 px-2 py-0.5 rounded inline-block text-sky-200">
-                  Verified Doctor Console
-                </div>
-                <h1 className="text-2xl font-extrabold tracking-tight">Active Duty: Dr. Sarah Jenkins</h1>
-                <p className="text-xs text-sky-100 max-w-lg font-mono">
-                  Review incoming requests, manage scheduling checklists, join approved online conversation streams, and inspect patient clinical files.
+                <p className="text-sm font-medium text-teal-700">Doctor Schedule</p>
+                <h1 className="text-2xl sm:text-3xl font-bold text-slate-900">
+                  {user?.fullName || activeDoctorProfile?.fullName || 'Doctor Workspace'}
+                </h1>
+                <p className="text-sm text-slate-600 max-w-xl">
+                  Review incoming patient requests, approve visits to open chat, and read any medical reports shared with you.
                 </p>
               </div>
 
-              {/* Quick summaries stats */}
-              <div className="flex items-center gap-3">
-                <div className="bg-white/10 px-4 py-2.5 rounded-xl text-center border border-white/5">
-                  <div className="text-lg font-extrabold">{appointmentsList.filter(a => a.status === 'Pending').length}</div>
-                  <div className="text-[9px] uppercase tracking-wider text-sky-200">Pending Req</div>
+              <div className="flex items-center gap-6 border-t md:border-t-0 md:border-l border-slate-200 pt-4 md:pt-0 md:pl-8 shrink-0">
+                <div>
+                  <div className="text-2xl font-bold text-slate-900 tabular-nums">
+                    {appointmentsList.filter((a) => a.status === 'Pending').length}
+                  </div>
+                  <div className="text-xs text-slate-500 mt-0.5">Pending requests</div>
                 </div>
-                <div className="bg-white/10 px-4 py-2.5 rounded-xl text-center border border-white/5">
-                  <div className="text-lg font-extrabold">{appointmentsList.filter(a => a.status === 'Approved').length}</div>
-                  <div className="text-[9px] uppercase tracking-wider text-sky-200">Active Consult</div>
+                <div>
+                  <div className="text-2xl font-bold text-slate-900 tabular-nums">
+                    {appointmentsList.filter((a) => a.status === 'Approved').length}
+                  </div>
+                  <div className="text-xs text-slate-500 mt-0.5">Approved visits</div>
                 </div>
               </div>
-            </div>
+            </section>
 
-            {/* Main Action layout split */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              
-              {/* Left Column: Waiting Consult requests desk */}
-              <div className="lg:col-span-2 space-y-4">
-                <h3 className="text-md font-bold text-slate-900 flex items-center gap-1.5">
-                  Incoming Patient Consultation Requests ({appointmentsList.filter(a => a.status === 'Pending').length})
-                </h3>
-
-                <div className="space-y-3.5">
-                  {appointmentsList.filter(a => a.status === 'Pending').length > 0 ? (
-                    appointmentsList.filter(a => a.status === 'Pending').map((apt) => (
-                      <div key={apt.id} className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-sm">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="space-y-1">
-                            <h4 className="text-xs font-extrabold text-slate-800">Patient Subject Name: {apt.patientName}</h4>
-                            <p className="text-[10px] text-slate-400 font-mono">Dispatched: {apt.date} | Request ID: MC-ST{apt.id}</p>
-                          </div>
-                          
-                          {/* File badge if exists */}
-                          {apt.medicalReportUrl && (
-                            <span className="text-[10px] bg-slate-100 text-slate-600 px-2 py-1 rounded inline-flex items-center gap-1 font-mono hover:bg-slate-200">
-                              <FileCode className="w-3.5 h-3.5 text-indigo-500" />
-                              {apt.medicalReportUrl}
-                            </span>
-                          )}
-                        </div>
-
-                        <div className="p-3 bg-slate-50 border border-slate-100 rounded-lg text-xs leading-relaxed font-mono text-slate-600">
-                          {apt.notes}
-                        </div>
-
-                        <div className="flex items-center justify-end gap-2 border-t border-slate-50 pt-3">
-                          <button
-                            onClick={() => handleApproveAppointment(apt.id, 'Rejected')}
-                            className="text-xs bg-rose-50 hover:bg-rose-100 text-rose-700 px-4 py-1.5 rounded-lg border border-rose-200/50 transition cursor-pointer"
-                          >
-                            Reject Consultation
-                          </button>
-                          <button
-                            onClick={() => handleApproveAppointment(apt.id, 'Approved')}
-                            className="text-xs bg-sky-600 hover:bg-sky-500 text-white px-4 py-1.5 rounded-lg transition cursor-pointer shadow"
-                          >
-                            Approve & Register Chat
-                          </button>
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="bg-white border border-slate-200 rounded-xl p-8 text-center text-slate-400 text-xs">
-                      <Clock className="w-6 h-6 text-slate-300 mx-auto mb-2" />
-                      There are no consultation pending requests on file. Good job!
-                    </div>
-                  )}
-                </div>
-
-                {/* Active Approved Consultations with Live Chat Trigger */}
-                <h3 className="text-md font-bold text-slate-900 pt-2 flex items-center gap-1.5">
-                  Active Approved Consultations ({appointmentsList.filter(a => a.status === 'Approved').length})
-                </h3>
+              <div className="lg:col-span-2 space-y-6">
+                {/* Pending Requests */}
                 <div className="space-y-3">
-                  {appointmentsList.filter(a => a.status === 'Approved').length > 0 ? (
-                    appointmentsList.filter(a => a.status === 'Approved').map((apt) => (
-                      <div key={apt.id} className="bg-white border border-slate-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm">
-                        <div className="space-y-1">
-                          <div className="flex items-center gap-2">
-                            <h4 className="text-xs font-extrabold text-slate-800">{apt.patientName}</h4>
-                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200/50">
-                              Approved
-                            </span>
-                          </div>
-                          <p className="text-[10px] text-slate-400 font-mono">Date: {apt.date} | ID: MC-A0{apt.id}</p>
-                          <p className="text-xs text-slate-600 line-clamp-1">{apt.notes}</p>
-                        </div>
-                        <button
-                          onClick={() => setActiveChatAppointment(apt)}
-                          className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-4 py-2 rounded-lg font-medium flex items-center gap-1.5 transition cursor-pointer flex-shrink-0"
+                  <h2 className="text-lg font-semibold text-slate-900">
+                    New Visit Requests ({appointmentsList.filter((a) => a.status === 'Pending').length})
+                  </h2>
+
+                  {appointmentsList.filter((a) => a.status === 'Pending').length > 0 ? (
+                    appointmentsList
+                      .filter((a) => a.status === 'Pending')
+                      .map((apt) => (
+                        <div
+                          key={apt.id}
+                          className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4"
                         >
-                          <MessageSquare className="w-3.5 h-3.5" /> Open Live Chat
-                        </button>
-                      </div>
-                    ))
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div>
+                              <h3 className="text-base font-semibold text-slate-900">
+                                {apt.patientName}
+                              </h3>
+                              <p className="text-xs text-slate-500 tabular-nums mt-0.5">
+                                Requested date: {apt.date}
+                              </p>
+                            </div>
+                            {apt.medicalReportUrl && (
+                              <span className="text-xs text-slate-700 font-mono inline-flex items-center gap-1.5 bg-slate-100 px-2.5 py-1 rounded-lg">
+                                <FileCode className="w-3.5 h-3.5 text-teal-700" />
+                                {apt.medicalReportUrl}
+                              </span>
+                            )}
+                          </div>
+
+                          <p className="text-sm text-slate-700 bg-slate-50 p-3.5 rounded-xl leading-relaxed">
+                            {apt.notes}
+                          </p>
+
+                          <div className="flex items-center justify-end gap-3 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => handleApproveAppointment(apt.id, 'Rejected')}
+                              className="px-4 py-2 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                            >
+                              Decline
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleApproveAppointment(apt.id, 'Approved')}
+                              className="px-4 py-2 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                            >
+                              Approve Visit
+                            </button>
+                          </div>
+                        </div>
+                      ))
                   ) : (
-                    <div className="bg-white border border-slate-200 rounded-xl p-6 text-center text-slate-400 text-xs">
-                      No approved consultations active yet. Approve a pending request above to start chatting.
+                    <div className="bg-white border border-slate-200 rounded-2xl p-8 text-center text-sm text-slate-500">
+                      No pending appointment requests right now.
+                    </div>
+                  )}
+                </div>
+
+                {/* Approved Visits */}
+                <div className="space-y-3">
+                  <h2 className="text-lg font-semibold text-slate-900">
+                    Approved Visits ({appointmentsList.filter((a) => a.status === 'Approved').length})
+                  </h2>
+
+                  {appointmentsList.filter((a) => a.status === 'Approved').length > 0 ? (
+                    appointmentsList
+                      .filter((a) => a.status === 'Approved')
+                      .map((apt) => (
+                        <div
+                          key={apt.id}
+                          className="bg-white border border-slate-200 rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+                        >
+                          <div className="space-y-1 min-w-0">
+                            <div className="flex items-center gap-3">
+                              <h3 className="text-base font-semibold text-slate-900">
+                                {apt.patientName}
+                              </h3>
+                              {renderAppointmentStatus(apt.status)}
+                            </div>
+                            <p className="text-xs text-slate-500 tabular-nums">
+                              Scheduled for {apt.date}
+                            </p>
+                            <p className="text-sm text-slate-600 truncate">{apt.notes}</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setActiveChatAppointment(apt)}
+                            className="px-4 py-2 bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold rounded-lg inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                          >
+                            <MessageSquare className="w-3.5 h-3.5" />
+                            Open Chat
+                          </button>
+                        </div>
+                      ))
+                  ) : (
+                    <div className="bg-white border border-slate-200 rounded-2xl p-8 text-center text-sm text-slate-500">
+                      Approved consultations will appear here so you can chat with patients.
                     </div>
                   )}
                 </div>
               </div>
 
-              {/* Right Column: Availability control & rating credentials check */}
+              {/* Right Column: Signed-in Doctor Profile */}
               <div className="space-y-4">
-                <h3 className="text-md font-bold text-slate-900">Clinician Credentials & Schedule</h3>
-
-                <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-sm">
-                  <div className="text-center pb-4 border-b border-slate-100">
-                    <img 
-                      src={doctorsList.find(d => d.id === 1)?.profileImageUrl || "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?auto=format&fit=crop&q=80&w=250"} 
-                      alt="Sarah Jenkins" 
-                      className="w-16 h-16 rounded-full object-cover mx-auto ring-4 ring-sky-50"
+                <h2 className="text-lg font-semibold text-slate-900">Your Profile</h2>
+                <div className="bg-white border border-slate-200 rounded-2xl p-6 space-y-5">
+                  <div className="flex items-center gap-4 pb-4 border-b border-slate-100">
+                    <DoctorAvatar
+                      doctorId={activeDoctorProfile?.id}
+                      email={user?.email || activeDoctorProfile?.email}
+                      name={user?.fullName || activeDoctorProfile?.fullName || 'Doctor'}
+                      sizeClass="w-14 h-14"
                     />
-                    <h4 className="text-xs font-extrabold text-slate-900 mt-2">{doctorsList.find(d => d.id === 1)?.fullName || "Dr. Sarah Jenkins"}</h4>
-                    <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-bold uppercase tracking-widest block w-max mx-auto mt-1">
-                      {(doctorsList.find(d => d.id === 1)?.specialization || "CARDIOLOGY").toUpperCase()}
-                    </span>
-                  </div>
-
-                  <div className="space-y-3.5">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-slate-500 font-bold uppercase text-[9px] tracking-wider">Availability:</span>
-                      <span className="font-mono text-slate-700 font-medium">{doctorsList.find(d => d.id === 1)?.availabilitySchedule || "Mon, Wed, Fri 09:00 - 15:00"}</span>
-                    </div>
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-slate-500 font-bold uppercase text-[9px] tracking-wider">Consultation Fee:</span>
-                      <strong className="text-slate-800">${doctorsList.find(d => d.id === 1)?.consultationFee || 150}.00 / session</strong>
-                    </div>
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-slate-500 font-bold uppercase text-[9px] tracking-wider">Clinic Rank:</span>
-                      <span className="flex items-center gap-0.5 text-amber-500 font-bold">
-                        ⭐ {doctorsList.find(d => d.id === 1)?.rating || 4.9} <span className="text-[9px] text-slate-400 font-normal ml-1">(120 reviews)</span>
-                      </span>
+                    <div className="min-w-0">
+                      <h3 className="text-base font-semibold text-slate-900 truncate">
+                        {user?.fullName || activeDoctorProfile?.fullName}
+                      </h3>
+                      <p className="text-xs font-medium text-teal-700 mt-0.5">
+                        {activeDoctorProfile?.specialization || 'General Physician'}
+                      </p>
                     </div>
                   </div>
 
-                  <hr className="border-slate-100" />
-
-                  <div className="space-y-2">
-                    <h5 className="text-[10px] font-bold uppercase text-slate-400 tracking-wider">Verification Board</h5>
-                    <div className="p-3 bg-emerald-50 rounded-lg text-[11px] text-emerald-800 font-mono border border-emerald-100 leading-normal flex items-start gap-2">
-                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0 mt-0.5" />
-                      <div>Your cardiothoracic certificates have been validated by Admin Board. Status: ACTIVE DUTY.</div>
+                  <dl className="space-y-3 text-sm">
+                    <div className="flex items-center justify-between gap-2">
+                      <dt className="text-slate-500">Hours</dt>
+                      <dd className="font-medium text-slate-900 tabular-nums">
+                        {activeDoctorProfile?.availabilitySchedule || 'Mon-Fri 09:00 - 17:00'}
+                      </dd>
                     </div>
-                  </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <dt className="text-slate-500">Visit fee</dt>
+                      <dd className="font-semibold text-slate-900 tabular-nums">
+                        ${activeDoctorProfile?.consultationFee ?? 100}
+                      </dd>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <dt className="text-slate-500">Experience</dt>
+                      <dd className="font-medium text-slate-900 tabular-nums">
+                        {activeDoctorProfile?.yearsOfExperience ?? 5} years
+                      </dd>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <dt className="text-slate-500">Rating</dt>
+                      <dd className="font-medium text-slate-900 inline-flex items-center gap-1 tabular-nums">
+                        <Star className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
+                        {activeDoctorProfile?.rating ?? 4.8}
+                      </dd>
+                    </div>
+                  </dl>
                 </div>
               </div>
-
             </div>
 
             {renderLiveChatPanel()}
-
           </div>
         )}
 
-        {/* 3. PLATFORM ADMIN MODULE SECTION */}
-        {activePortal === 'admin' && (
-          <div className="space-y-8">
-            
-            {/* Header */}
-            <div className="bg-indigo-900 text-white p-6 rounded-2xl flex items-center justify-between flex-wrap gap-4 shadow-sm">
-              <div className="space-y-1">
-                <div className="text-[9.5px] font-bold tracking-wider uppercase bg-white/20 p-1 rounded inline-block text-indigo-200">
-                  Superuser Command Center
+        {/* ADMIN OVERVIEW */}
+        {activeView === 'admin' && (
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+            <section className="bg-white border border-slate-200 rounded-2xl p-6 sm:p-8 space-y-2">
+              <p className="text-sm font-medium text-teal-700">Clinic Administration</p>
+              <h1 className="text-2xl sm:text-3xl font-bold text-slate-900">
+                Platform Overview & Doctor Verification
+              </h1>
+              <p className="text-sm text-slate-600 max-w-2xl">
+                Monitor appointments, manage active doctor accounts, and review patient feedback.
+              </p>
+            </section>
+
+            {/* 4-column KPI strip */}
+            <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-1">
+                <span className="text-xs font-medium text-slate-500">Registered Users</span>
+                <div className="text-2xl font-bold text-slate-900 tabular-nums">
+                  {adminStats?.summary?.totalUsers ?? 3}
                 </div>
-                <h1 className="text-2xl font-extrabold tracking-tight">MediConnect Board Administration</h1>
-                <p className="text-xs text-indigo-100 max-w-lg font-mono">
-                  Perform physician audits, moderate patient reviews, lock/block accounts, and view dynamic weekly appointment charts.
+                <p className="text-xs text-slate-500">Patients, doctors, and admins</p>
+              </div>
+              <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-1">
+                <span className="text-xs font-medium text-slate-500">Active Doctors</span>
+                <div className="text-2xl font-bold text-slate-900 tabular-nums">
+                  {adminStats?.summary?.activeDoctors ?? doctorsList.length}
+                </div>
+                <p className="text-xs text-slate-500 tabular-nums">
+                  {adminModeration.doctors.length || doctorsList.length} total registered
                 </p>
               </div>
-            </div>
-
-            {/* platform KPI Cards */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm space-y-2">
-                <span className="text-[10px] uppercase font-bold tracking-widest text-slate-400">Platform Users Registered</span>
-                <div className="text-2xl font-extrabold text-slate-900">{adminStats?.summary?.totalUsers ?? 3} Users</div>
-                <p className="text-[9px] text-slate-400 flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full"></span> Active Directory Sync
+              <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-1">
+                <span className="text-xs font-medium text-slate-500">Total Appointments</span>
+                <div className="text-2xl font-bold text-slate-900 tabular-nums">
+                  {adminStats?.summary?.totalAppointments ?? appointmentsList.length}
+                </div>
+                <p className="text-xs text-amber-700 font-medium tabular-nums">
+                  {appointmentsList.filter((a) => a.status === 'Pending').length} awaiting approval
                 </p>
               </div>
-              <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm space-y-2">
-                <span className="text-[10px] uppercase font-bold tracking-widest text-slate-400">Commissioned Doctors</span>
-                <div className="text-2xl font-extrabold text-slate-900">{adminStats?.summary?.activeDoctors ?? doctorsList.length} Active</div>
-                <p className="text-[9px] text-slate-400">{adminModeration.doctors.length || doctorsList.length} total registered</p>
-              </div>
-              <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm space-y-2">
-                <span className="text-[10px] uppercase font-bold tracking-widest text-slate-400">Total Consultations</span>
-                <div className="text-2xl font-extrabold text-slate-900">{adminStats?.summary?.totalAppointments ?? appointmentsList.length} Bookings</div>
-                <p className="text-[9px] text-amber-600 font-bold">{appointmentsList.filter(a => a.status === 'Pending').length} in active queue</p>
-              </div>
-              <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm space-y-2">
-                <span className="text-[10px] uppercase font-bold tracking-widest text-slate-400">System Revenue Gross</span>
-                <div className="text-2xl font-extrabold text-slate-900">
-                  ${adminStats?.summary?.totalRevenue ?? (appointmentsList.filter(a => a.status === 'Approved').length * 130)} USD
+              <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-1">
+                <span className="text-xs font-medium text-slate-500">Approved Consultation Fees</span>
+                <div className="text-2xl font-bold text-slate-900 tabular-nums">
+                  ${adminStats?.summary?.totalRevenue ?? appointmentsList.filter((a) => a.status === 'Approved').length * 130}
                 </div>
-                <p className="text-[9px] text-emerald-600 font-medium">Approved clinical fees</p>
+                <p className="text-xs text-emerald-700 font-medium">Completed & approved bookings</p>
               </div>
-            </div>
+            </section>
 
-            {/* Dynamic Charts */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              
-              <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-3 shadow-sm">
+            {/* Charts */}
+            <section className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs uppercase font-extrabold text-slate-400 tracking-wider">Weekly Consultations Traffic</span>
-                  <span className="text-[10px] font-mono text-indigo-500">Weekly count</span>
+                  <h2 className="text-sm font-semibold text-slate-900">Weekly Appointments</h2>
+                  <span className="text-xs text-slate-500">Last 7 days</span>
                 </div>
-                
                 <div className="h-44 flex items-end justify-between border-b border-l border-slate-200 pb-2 pl-2 pt-4">
                   {(adminStats?.chartData?.weeklyAppointments ?? [
-                    { day: "Mon", count: 8 },
-                    { day: "Tue", count: 12 },
-                    { day: "Wed", count: 15 },
-                    { day: "Thu", count: 11 },
-                    { day: "Fri", count: 18 },
-                    { day: "Sat", count: 6 },
-                    { day: "Sun", count: 4 }
+                    { day: 'Mon', count: 8 },
+                    { day: 'Tue', count: 12 },
+                    { day: 'Wed', count: 15 },
+                    { day: 'Thu', count: 11 },
+                    { day: 'Fri', count: 18 },
+                    { day: 'Sat', count: 6 },
+                    { day: 'Sun', count: 4 },
                   ]).map((item: any, i: number, arr: any[]) => {
                     const maxCount = Math.max(...arr.map((x: any) => x.count || 1), 1);
                     return (
-                      <div key={i} className="flex-1 flex flex-col items-center gap-1.5 h-full justify-end group px-1">
-                        <span className="text-[10px] font-mono font-bold text-indigo-600 opacity-0 group-hover:opacity-100 transition duration-150">{item.count}</span>
-                        <div 
-                          className="w-full bg-slate-900 group-hover:bg-indigo-600 rounded-t transition-all duration-300"
+                      <div
+                        key={i}
+                        className="flex-1 flex flex-col items-center gap-1.5 h-full justify-end group px-1"
+                      >
+                        <span className="text-xs font-mono font-medium text-teal-700 tabular-nums opacity-0 group-hover:opacity-100 transition-opacity">
+                          {item.count}
+                        </span>
+                        <div
+                          className="w-full bg-slate-800 group-hover:bg-teal-700 rounded-t transition-colors"
                           style={{ height: `${(item.count / maxCount) * 100}%` }}
-                        ></div>
-                        <span className="text-[9px] text-slate-400 font-mono">{item.day}</span>
+                        />
+                        <span className="text-xs text-slate-500 font-mono">{item.day}</span>
                       </div>
                     );
                   })}
                 </div>
               </div>
 
-              <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-3 shadow-sm">
+              <div className="bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs uppercase font-extrabold text-slate-400 tracking-wider">Disease Specialty Distribution</span>
-                  <span className="text-[10px] font-mono text-emerald-500">Verification load</span>
+                  <h2 className="text-sm font-semibold text-slate-900">Doctors by Specialty</h2>
+                  <span className="text-xs text-slate-500">Active roster</span>
                 </div>
-                
-                <div className="space-y-2.5 h-44 flex flex-col justify-center">
+                <div className="space-y-3 h-44 flex flex-col justify-center">
                   {(adminStats?.chartData?.specializationDistribution ?? [
-                    { name: "Cardiology", value: 3 },
-                    { name: "Neurology", value: 2 },
-                    { name: "Dermatology", value: 3 },
-                    { name: "General Physician", value: 6 }
+                    { name: 'Cardiology', value: 3 },
+                    { name: 'Neurology', value: 2 },
+                    { name: 'Dermatology', value: 3 },
+                    { name: 'General Physician', value: 6 },
                   ]).map((v: any, i: number, arr: any[]) => {
                     const maxVal = Math.max(...arr.map((x: any) => x.value || 1), 1);
                     return (
                       <div key={i} className="space-y-1">
-                        <div className="flex justify-between text-[11px]">
-                          <span className="font-bold text-slate-700">{v.name}</span>
-                          <span className="font-mono text-slate-500 font-medium">{v.value} clinicians</span>
+                        <div className="flex justify-between text-xs">
+                          <span className="font-medium text-slate-800">{v.name}</span>
+                          <span className="font-mono text-slate-500 tabular-nums">{v.value} doctors</span>
                         </div>
-                        <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                          <div className="bg-emerald-500 h-full rounded-full" style={{ width: `${(v.value / maxVal) * 100}%` }}></div>
+                        <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+                          <div
+                            className="bg-teal-700 h-full rounded-full"
+                            style={{ width: `${(v.value / maxVal) * 100}%` }}
+                          />
                         </div>
                       </div>
                     );
                   })}
                 </div>
               </div>
+            </section>
 
-            </div>
-
-            {/* Platform Doctors Moderation List */}
-            <div className="space-y-4">
-              <h3 className="text-md font-bold text-slate-900">Physicians Registration Registry</h3>
-              
-              <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-                <table className="w-full text-xs text-left">
-                  <thead className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200">
+            {/* Doctor Registry */}
+            <section className="space-y-3">
+              <h2 className="text-lg font-semibold text-slate-900">Registered Doctors</h2>
+              <div className="bg-white border border-slate-200 rounded-2xl overflow-x-auto">
+                <table className="w-full text-sm text-left">
+                  <thead className="bg-slate-50 text-slate-600 text-xs font-semibold border-b border-slate-200">
                     <tr>
-                      <th className="p-4">Physician Consultant</th>
-                      <th className="p-4">Clinic Email</th>
-                      <th className="p-4">Specialty Category</th>
-                      <th className="p-4">Experience Rank</th>
-                      <th className="p-4">Security Toggle</th>
+                      <th className="py-3.5 px-5">Doctor</th>
+                      <th className="py-3.5 px-5">Email</th>
+                      <th className="py-3.5 px-5">Specialty</th>
+                      <th className="py-3.5 px-5">Experience</th>
+                      <th className="py-3.5 px-5">Status</th>
+                      <th className="py-3.5 px-5 text-right">Action</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {(adminModeration.doctors.length > 0 ? adminModeration.doctors : doctorsList).map((doc) => (
-                      <tr key={doc.id} className="hover:bg-slate-50">
-                        <td className="p-4 flex items-center gap-2">
-                          <img src={doc.profileImageUrl} alt="avatar" className="w-7 h-7 rounded-full object-cover" />
-                          <span className="font-extrabold text-slate-800">{doc.fullName}</span>
-                        </td>
-                        <td className="p-4 font-mono">{doc.email}</td>
-                        <td className="p-4 font-medium text-emerald-700">{doc.specialization}</td>
-                        <td className="p-4 font-mono">{doc.yearsOfExperience} Years of practice</td>
-                        <td className="p-4">
-                          <button
-                            onClick={() => handleToggleBlockDoctor(doc.id)}
-                            className={`px-2.5 py-1 text-[10px] rounded border transition font-bold font-mono cursor-pointer ${
-                              doc.isBlocked 
-                                ? "bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100" 
-                                : "bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100"
-                            }`}
-                          >
-                            {doc.isBlocked ? "❌ SUSPENDED (Unblock)" : "✅ ACTIVE LICENSED"}
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
+                    {(adminModeration.doctors.length > 0 ? adminModeration.doctors : doctorsList).map(
+                      (doc) => (
+                        <tr key={doc.id} className="hover:bg-slate-50/70">
+                          <td className="py-3.5 px-5">
+                            <div className="flex items-center gap-3">
+                              <DoctorAvatar
+                                doctorId={doc.id}
+                                email={doc.email}
+                                name={doc.fullName}
+                                profileImageUrl={doc.profileImageUrl}
+                                sizeClass="w-8 h-8"
+                              />
+                              <span className="font-semibold text-slate-900">{doc.fullName}</span>
+                            </div>
+                          </td>
+                          <td className="py-3.5 px-5 text-slate-600">{doc.email}</td>
+                          <td className="py-3.5 px-5 text-slate-700">{doc.specialization}</td>
+                          <td className="py-3.5 px-5 tabular-nums text-slate-600">
+                            {doc.yearsOfExperience} yrs
+                          </td>
+                          <td className="py-3.5 px-5">
+                            {doc.isBlocked ? (
+                              <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-rose-700">
+                                <XCircle className="w-3.5 h-3.5" />
+                                Suspended
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700">
+                                <CheckCircle2 className="w-3.5 h-3.5" />
+                                Active
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-3.5 px-5 text-right">
+                            <button
+                              type="button"
+                              onClick={() => handleToggleBlockDoctor(doc.id)}
+                              className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer whitespace-nowrap ${
+                                doc.isBlocked
+                                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
+                                  : 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100'
+                              }`}
+                            >
+                              {doc.isBlocked ? 'Reactivate' : 'Suspend'}
+                            </button>
+                          </td>
+                        </tr>
+                      )
+                    )}
                   </tbody>
                 </table>
               </div>
-            </div>
+            </section>
 
-            {/* Patient Reviews Moderation */}
-            <div className="space-y-4">
-              <h3 className="text-md font-bold text-slate-900">Patient Feedback & Review Moderation</h3>
-              <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-                <table className="w-full text-xs text-left">
-                  <thead className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200">
+            {/* Patient Reviews */}
+            <section className="space-y-3">
+              <h2 className="text-lg font-semibold text-slate-900">Patient Reviews</h2>
+              <div className="bg-white border border-slate-200 rounded-2xl overflow-x-auto">
+                <table className="w-full text-sm text-left">
+                  <thead className="bg-slate-50 text-slate-600 text-xs font-semibold border-b border-slate-200">
                     <tr>
-                      <th className="p-4">Patient</th>
-                      <th className="p-4">Physician</th>
-                      <th className="p-4">Rating</th>
-                      <th className="p-4">Comment</th>
-                      <th className="p-4 text-right">Action</th>
+                      <th className="py-3.5 px-5">Patient</th>
+                      <th className="py-3.5 px-5">Doctor</th>
+                      <th className="py-3.5 px-5">Rating</th>
+                      <th className="py-3.5 px-5">Comment</th>
+                      <th className="py-3.5 px-5 text-right">Action</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {adminModeration.feedbacks.length > 0 ? (
                       adminModeration.feedbacks.map((fb: any) => (
-                        <tr key={fb.id} className="hover:bg-slate-50">
-                          <td className="p-4 font-bold text-slate-800">{fb.patientName}</td>
-                          <td className="p-4 text-indigo-700 font-medium">{fb.doctorName}</td>
-                          <td className="p-4 font-mono">⭐ {fb.rating}/5</td>
-                          <td className="p-4 text-slate-600">{fb.comment}</td>
-                          <td className="p-4 text-right">
+                        <tr key={fb.id} className="hover:bg-slate-50/70">
+                          <td className="py-3.5 px-5 font-semibold text-slate-900">{fb.patientName}</td>
+                          <td className="py-3.5 px-5 text-slate-700">{fb.doctorName}</td>
+                          <td className="py-3.5 px-5 font-mono tabular-nums text-slate-800">
+                            {fb.rating} / 5
+                          </td>
+                          <td className="py-3.5 px-5 text-slate-600">{fb.comment}</td>
+                          <td className="py-3.5 px-5 text-right">
                             <button
+                              type="button"
                               onClick={() => handleDeleteFeedback(fb.id)}
-                              className="text-[10px] bg-rose-50 hover:bg-rose-100 text-rose-700 px-2.5 py-1 rounded border border-rose-200 font-bold cursor-pointer"
+                              className="px-3 py-1.5 text-xs font-semibold bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-lg border border-rose-200 cursor-pointer"
                             >
                               Remove
                             </button>
@@ -1378,80 +2003,68 @@ export default function App() {
                       ))
                     ) : (
                       <tr>
-                        <td colSpan={5} className="p-6 text-center text-slate-400">
-                          No patient reviews pending moderation.
+                        <td colSpan={5} className="py-8 px-5 text-center text-sm text-slate-500">
+                          No patient reviews to moderate.
                         </td>
                       </tr>
                     )}
                   </tbody>
                 </table>
               </div>
-            </div>
-
+            </section>
           </div>
         )}
 
-        {/* 4. DEVOPS & SPRING BOOT SOURCE CODE EXPLORER */}
-        {activePortal === 'devops' && (
-          <div className="space-y-6">
-            
-            {/* Description head */}
-            <div className="bg-indigo-950 text-slate-100 p-6 rounded-2xl border border-indigo-900 shadow-lg space-y-2">
-              <div className="flex items-center gap-2">
-                <Code2 className="w-5 h-5 text-indigo-400" />
-                <span className="text-xs uppercase tracking-widest font-extrabold text-indigo-300">Java Microservice Project Scaffold Explorer</span>
+        {/* ARCHITECTURE & BACKEND CODE EXPLORER */}
+        {activeView === 'devops' && (
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
+            <section className="bg-white border border-slate-200 rounded-2xl p-6 sm:p-8 space-y-2">
+              <div className="flex items-center gap-2 text-teal-700 text-sm font-medium">
+                <Code2 className="w-4 h-4" />
+                Backend & Deployment Files
               </div>
-              <h1 className="text-2xl font-extrabold tracking-tight">MediConnect Pro Production Code & Assets</h1>
-              <p className="text-xs text-slate-300 max-w-3xl leading-relaxed font-mono">
-                Inspect physical Java 17, Spring Boot 3 configurations with JWT Token Authentication filters, Dockerfiles, docker-compose orchestration, and Jenkins pipelines. Select any file to access pristine downloadable codes.
+              <h1 className="text-2xl font-bold text-slate-900">
+                Java Spring Boot, Docker, and Kubernetes Architecture
+              </h1>
+              <p className="text-sm text-slate-600 max-w-3xl">
+                Browse the Java 17 microservices (`doctor-service` and `appointment-service`), MySQL initialization scripts, Nginx gateway configuration, Docker Compose, and AWS EKS manifests.
               </p>
-            </div>
+            </section>
 
-            {/* Split layout: Tree + Editor */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              
-              {/* Left Column: Directories filetree */}
-              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 min-h-[450px] shadow-sm flex flex-col justify-between">
-                <div>
-                  <h3 className="text-slate-400 text-[10px] font-bold uppercase tracking-wider mb-3 px-3">Microservices Workspace Root</h3>
-                  
-                  <div className="space-y-1">
-                    {devopsFiles.map((item) => renderDevFolder(item))}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 min-h-[480px] flex flex-col justify-between">
+                <div className="space-y-1">
+                  <div className="text-xs font-semibold text-slate-400 px-3 pb-2">
+                    Repository Files
                   </div>
-                </div>
-
-                <div className="p-3 bg-slate-950 border border-slate-800 rounded-lg text-[10px] text-slate-400 font-mono mt-4">
-                  🎯 Click any java class or descriptor to fetch raw code block.
+                  {devopsFiles.map((item) => renderDevFolder(item))}
                 </div>
               </div>
 
-              {/* Right Column: Code viewer display terminal */}
-              <div className="lg:col-span-2 flex flex-col bg-slate-950 border border-slate-800 rounded-xl overflow-hidden min-h-[450px]">
-                
-                {/* Tab header */}
-                <div className="bg-slate-900 text-slate-200 px-4 py-3 border-b border-slate-800 flex items-center justify-between">
-                  <div className="flex items-center gap-2.5">
-                    <Terminal className="w-4 h-4 text-emerald-400" />
-                    <span className="text-xs font-mono font-semibold text-white">
-                      {selectedDevFile ? selectedDevFile.path : 'None Selected'}
+              <div className="lg:col-span-2 flex flex-col bg-slate-950 border border-slate-800 rounded-2xl overflow-hidden min-h-[480px]">
+                <div className="bg-slate-900 text-slate-200 px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Terminal className="w-4 h-4 text-teal-400 shrink-0" />
+                    <span className="text-xs font-mono font-medium text-white truncate">
+                      {selectedDevFile ? selectedDevFile.path : 'Select a file'}
                     </span>
                   </div>
-
                   {selectedDevFile && (
                     <button
+                      type="button"
                       onClick={() => {
-                        navigator.clipboard.writeText(selectedDevFile.content);
-                        showToast("Raw source code copied successfully to system clipboard.");
+                        navigator.clipboard.writeText(selectedDevFile.content || '');
+                        showToast('Copied file contents to clipboard.');
                       }}
-                      className="text-[10px] bg-slate-800 hover:bg-slate-700 text-white px-3 py-1.5 rounded border border-slate-700 transition flex items-center gap-1 cursor-pointer font-mono font-medium"
+                      className="text-xs bg-slate-800 hover:bg-slate-700 text-white px-3 py-1.5 rounded-lg border border-slate-700 inline-flex items-center gap-1.5 cursor-pointer font-medium whitespace-nowrap shrink-0"
                     >
-                      <Download className="w-3 h-3" /> Copy Code
+                      <Copy className="w-3.5 h-3.5" />
+                      Copy
                     </button>
                   )}
                 </div>
 
-                {/* Dark workspace console */}
-                <div className="flex-1 p-4 overflow-auto max-h-[420px] font-mono text-xs text-indigo-200 leading-relaxed bg-[#0c1017]">
+                <div className="flex-1 p-4 overflow-auto max-h-[500px] font-mono text-xs text-slate-200 leading-relaxed">
                   {selectedDevFile ? (
                     <pre className="whitespace-pre">
                       <code>{selectedDevFile.content}</code>
@@ -1459,140 +2072,169 @@ export default function App() {
                   ) : (
                     <div className="h-full flex flex-col items-center justify-center text-slate-500 gap-2 p-12">
                       <Code2 className="w-8 h-8 text-slate-600" />
-                      <span>Select a codebase target in the directory tree on the left to review architecture.</span>
+                      <span>Select a file from the tree on the left to inspect its source.</span>
                     </div>
                   )}
                 </div>
-
               </div>
-
             </div>
-
           </div>
         )}
-
       </main>
 
-      {/* --- Patient Clinical Booking Modal Dialog --- */}
+      {/* Booking Modal */}
       <AnimatePresence>
         {isBookingOpen && selectedDoctor && (
-          <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/40 backdrop-blur-sm flex items-center justify-center p-4">
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.95 }}
+          <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/50 backdrop-blur-xs flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.97 }}
               animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white rounded-2xl border border-slate-200 max-w-lg w-full overflow-hidden shadow-2xl p-6 space-y-5"
+              exit={{ opacity: 0, scale: 0.97 }}
+              transition={{ duration: 0.15 }}
+              className="bg-white rounded-2xl border border-slate-200 max-w-lg w-full overflow-hidden shadow-xl p-6 space-y-5"
             >
-              
-              {/* Doctor details head */}
-              <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
-                <img 
-                  src={selectedDoctor.profileImageUrl} 
-                  alt={selectedDoctor.fullName} 
-                  className="w-12 h-12 rounded-full object-cover"
-                />
-                <div>
-                  <h4 className="text-xs font-extrabold text-slate-800">Booking: {selectedDoctor.fullName}</h4>
-                  <p className="text-[10px] text-indigo-600 font-bold uppercase tracking-wide">{selectedDoctor.specialization}</p>
+              <div className="flex items-start justify-between gap-4 pb-4 border-b border-slate-100">
+                <div className="flex items-center gap-3">
+                  <DoctorAvatar
+                    doctorId={selectedDoctor.id}
+                    email={selectedDoctor.email}
+                    name={selectedDoctor.fullName}
+                    profileImageUrl={selectedDoctor.profileImageUrl}
+                    sizeClass="w-12 h-12"
+                  />
+                  <div>
+                    <h3 className="text-base font-semibold text-slate-900">
+                      Book Visit with {selectedDoctor.fullName}
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-0.5 tabular-nums">
+                      {selectedDoctor.specialization} · ${selectedDoctor.consultationFee} per visit
+                    </p>
+                  </div>
                 </div>
+                <button
+                  type="button"
+                  aria-label="Close booking dialog"
+                  onClick={() => setIsBookingOpen(false)}
+                  className="text-slate-400 hover:text-slate-700 p-1 cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
               </div>
 
-              {/* Form Input elements */}
               <div className="space-y-4">
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Consultation Target Date</label>
-                  <input 
-                    type="date" 
+                <div className="space-y-1.5">
+                  <label htmlFor="booking-date" className="block text-sm font-medium text-slate-700">
+                    Preferred date
+                  </label>
+                  <input
+                    id="booking-date"
+                    type="date"
                     value={bookDate}
                     onChange={(e) => setBookDate(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
+                    className="w-full h-11 bg-white border border-slate-300 rounded-xl px-3.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-600 font-mono tabular-nums"
                   />
-                  <span className="text-[9px] text-slate-400">Consultant hours: {selectedDoctor.availabilitySchedule}</span>
+                  <p className="text-xs text-slate-500">
+                    Doctor hours: {selectedDoctor.availabilitySchedule}
+                  </p>
                 </div>
 
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Health Symptoms Description notes</label>
-                  <textarea 
-                    rows={3} 
-                    placeholder="Describe symptoms, duration of fever, discomfort indicators, or historical medication files..."
+                <div className="space-y-1.5">
+                  <label htmlFor="booking-notes" className="block text-sm font-medium text-slate-700">
+                    Reason for visit
+                  </label>
+                  <textarea
+                    id="booking-notes"
+                    rows={3}
+                    placeholder="Briefly describe your symptoms, how long they have lasted, or any medications you take..."
                     value={bookNotes}
                     onChange={(e) => setBookNotes(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono resize-none"
-                  ></textarea>
+                    className="w-full bg-white border border-slate-300 rounded-xl p-3.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-600 resize-none"
+                  />
                 </div>
 
-                {/* Cloudinary Drag/Drop simulated attachment box */}
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Upload Medical Records / Reports (Cloudinary Integrated)</label>
-                  
-                  <div className="border border-dashed border-slate-300 rounded-xl p-4 bg-slate-50 flex flex-col items-center justify-center text-center text-xs text-slate-500 space-y-2 relative">
-                    <input 
-                      type="file" 
+                <div className="space-y-1.5">
+                  <span className="block text-sm font-medium text-slate-700">
+                    Attach medical report (optional)
+                  </span>
+                  <div className="border border-dashed border-slate-300 rounded-xl p-4 bg-slate-50 flex flex-col items-center justify-center text-center text-xs text-slate-600 space-y-1.5 relative">
+                    <input
+                      type="file"
                       onChange={handleFileUpload}
                       className="absolute inset-0 opacity-0 cursor-pointer"
                     />
-                    
                     {isUploading ? (
-                      <div className="flex items-center gap-2 text-indigo-600 font-medium">
+                      <div className="flex items-center gap-2 text-teal-700 font-medium">
                         <RefreshCw className="w-4 h-4 animate-spin" />
-                        <span>Uploading files to Cloudinary secure credentials node...</span>
+                        <span>Uploading file...</span>
                       </div>
                     ) : uploadedFileName ? (
-                      <div className="space-y-1">
-                        <div className="text-emerald-700 font-bold text-[11px] font-mono flex items-center justify-center gap-1">
-                          <CheckCircle2 className="w-4 h-4" /> Reports attached successfully!
-                        </div>
-                        <div className="text-[10px] font-mono text-slate-400">{uploadedFileName}</div>
+                      <div className="text-emerald-700 font-medium flex items-center gap-1.5">
+                        <CheckCircle2 className="w-4 h-4" />
+                        <span>Attached: {uploadedFileName}</span>
                       </div>
                     ) : (
                       <>
                         <Upload className="w-5 h-5 text-slate-400" />
-                        <div>
-                          <strong className="text-slate-700 font-medium cursor-pointer hover:underline">Click to browse file</strong> or drag & drop records here
-                        </div>
-                        <span className="text-[9px] text-slate-400 uppercase">PDF, JPG, PNG formats accepted</span>
+                        <span>
+                          <strong className="text-slate-800">Click to upload</strong> PDF, JPG, or PNG
+                        </span>
                       </>
                     )}
                   </div>
                 </div>
               </div>
 
-              {/* Action buttons */}
-              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+              <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
                 <button
+                  type="button"
                   onClick={() => setIsBookingOpen(false)}
-                  className="text-xs text-slate-500 hover:bg-slate-100 px-4 py-2 rounded-xl transition"
+                  className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
+                  type="button"
+                  disabled={isBookingSubmitting}
                   onClick={handleConfirmBooking}
-                  className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-5 py-2 rounded-xl font-medium shadow-md shadow-indigo-100 transition duration-150 cursor-pointer"
+                  className="px-5 py-2.5 bg-teal-700 hover:bg-teal-800 disabled:opacity-60 text-white text-sm font-semibold rounded-xl transition-colors cursor-pointer whitespace-nowrap"
                 >
-                  Submit Approval Proposal
+                  {isBookingSubmitting ? 'Sending...' : 'Send Booking Request'}
                 </button>
               </div>
-
             </motion.div>
           </div>
         )}
       </AnimatePresence>
 
-      {/* Corporate Clinical footer */}
-      <footer className="bg-slate-900 border-t border-slate-800 text-slate-400 text-xs py-8 mt-12">
-        <div className="max-w-7xl mx-auto px-4 sm:p-6 lg:p-8 flex flex-col sm:flex-row items-center justify-between gap-4 font-mono text-[10px] uppercase tracking-wider">
-          <div className="flex items-center gap-2">
-            <HeartPulse className="w-4 h-4 text-rose-500" />
-            <span>© 2026 MediConnect Pro Systems Ltd.</span>
-          </div>
-          <div className="flex items-center gap-4">
-            <span>MySQL 8 Active Connection Node</span>
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-            <span>Gateway Online</span>
+      {/* Clean Footer */}
+      <footer className="bg-white border-t border-slate-200 text-slate-500 text-xs py-6 mt-12">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4">
+          <span>© 2026 MediConnect. Online Doctor Consultation Platform.</span>
+          <div className="flex items-center gap-6">
+            <button
+              type="button"
+              onClick={() => setActiveView('patient')}
+              className="hover:text-slate-900 cursor-pointer"
+            >
+              Find Doctors
+            </button>
+            <button
+              type="button"
+              onClick={() => openAuthScreen('login')}
+              className="hover:text-slate-900 cursor-pointer"
+            >
+              Log In / Sign Up
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveView('devops')}
+              className="hover:text-slate-900 cursor-pointer"
+            >
+              Architecture
+            </button>
           </div>
         </div>
       </footer>
-
     </div>
   );
 }

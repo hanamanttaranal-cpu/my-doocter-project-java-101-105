@@ -9,25 +9,53 @@ dotenv.config();
 const isProd = process.env.NODE_ENV === 'production';
 const PORT = 3000;
 
-// Initialize Google Gemini AI securely on the server
-let aiClient: GoogleGenAI | null = null;
-try {
-  const key = process.env.GEMINI_API_KEY;
-  if (key && key !== 'MY_GEMINI_API_KEY') {
-    aiClient = new GoogleGenAI({
-      apiKey: key,
+// Helper to initialize Google Gemini AI securely on the server
+let cachedKey = '';
+let cachedClient: GoogleGenAI | null = null;
+
+function getAiClient(): GoogleGenAI | null {
+  const rawKey = (process.env.GEMINI_API_KEY || '').trim();
+  if (!rawKey || rawKey === 'MY_GEMINI_API_KEY' || rawKey === 'your_gemini_api_key') {
+    return null;
+  }
+  if (!cachedClient || cachedKey !== rawKey) {
+    cachedClient = new GoogleGenAI({
+      apiKey: rawKey,
       httpOptions: {
         headers: {
           'User-Agent': 'aistudio-build',
         },
       },
     });
-    console.log('Gemini AI client configured and initialized.');
-  } else {
-    console.log('Gemini AI key missing or default; running triage in sandbox backup mode.');
+    cachedKey = rawKey;
   }
-} catch (err) {
-  console.error('Error initializing Gemini developer client:', err);
+  return cachedClient;
+}
+
+function formatGeminiError(err: any, fallbackMessage: string): { status: number; message: string } {
+  const rawMsg = String(err?.message || '');
+  if (rawMsg.includes('API_KEY_INVALID') || rawMsg.includes('API key not valid') || err?.status === 400) {
+    return {
+      status: 400,
+      message: 'The Gemini API key is invalid. Please check or update your GEMINI_API_KEY in the Settings > Secrets panel.',
+    };
+  }
+  if (rawMsg.includes('PERMISSION_DENIED') || err?.status === 403) {
+    return {
+      status: 403,
+      message: 'Gemini API access was denied. Please verify your GEMINI_API_KEY permissions in the Settings > Secrets panel.',
+    };
+  }
+  if (rawMsg.includes('RESOURCE_EXHAUSTED') || err?.status === 429) {
+    return {
+      status: 429,
+      message: 'Gemini API quota exceeded. Please wait a moment or check your plan in Settings > Secrets.',
+    };
+  }
+  return {
+    status: 500,
+    message: rawMsg || fallbackMessage,
+  };
 }
 
 // In-Memory Database representing MySQL tables with pre-built clinical mock records
@@ -39,7 +67,7 @@ let doctors = [
     specialization: "Cardiology",
     yearsOfExperience: 14,
     biography: "Board-certified cardiologist specializing in preventive medicine, heart failure recovery, and non-invasive imaging diagnostics.",
-    profileImageUrl: "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?auto=format&fit=crop&q=80&w=250",
+    profileImageUrl: "",
     certificatesUrl: "certification_cardio_board_certified.pdf",
     rating: 4.9,
     isBlocked: false,
@@ -53,7 +81,7 @@ let doctors = [
     specialization: "Neurology",
     yearsOfExperience: 12,
     biography: "Senior clinical researcher and neurologist focusing on cognitive decline, persistent migraine treatments, and peripheral neuropathy.",
-    profileImageUrl: "https://images.unsplash.com/photo-1622253692010-333f2da6031d?auto=format&fit=crop&q=80&w=250",
+    profileImageUrl: "",
     certificatesUrl: "certification_neuro_board_certified.pdf",
     rating: 4.8,
     isBlocked: false,
@@ -67,7 +95,7 @@ let doctors = [
     specialization: "Dermatology",
     yearsOfExperience: 8,
     biography: "Expert pediatric and adult dermatologist focusing on skin cancer screening, severe eczema protocols, and laser treatments.",
-    profileImageUrl: "https://images.unsplash.com/photo-1594824813573-246434e33963?auto=format&fit=crop&q=80&w=250",
+    profileImageUrl: "",
     certificatesUrl: "certification_derm_board_certified.pdf",
     rating: 4.7,
     isBlocked: false,
@@ -81,7 +109,7 @@ let doctors = [
     specialization: "General Physician",
     yearsOfExperience: 10,
     biography: "Comprehensive primary care, chronic condition auditing, metabolic management, and early-stage disease screenings.",
-    profileImageUrl: "https://images.unsplash.com/photo-1612349317150-e413f6a5b16d?auto=format&fit=crop&q=80&w=250",
+    profileImageUrl: "",
     certificatesUrl: "certification_general_board_certified.pdf",
     rating: 4.9,
     isBlocked: false,
@@ -95,7 +123,7 @@ let doctors = [
     specialization: "Orthopedics",
     yearsOfExperience: 11,
     biography: "Reconstructive joint surgeon and sports medicine specialist. Expert in skeletal biomechanics and microscopic arthroscopy.",
-    profileImageUrl: "https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&q=80&w=250",
+    profileImageUrl: "",
     certificatesUrl: "certification_ortho_board_certified.pdf",
     rating: 4.6,
     isBlocked: false,
@@ -106,7 +134,7 @@ let doctors = [
 
 let users = [
   { id: 1, email: "patient@mediconnect.pro", password: "password", fullName: "John Carter", role: "PATIENT", profileImageUrl: "" },
-  { id: 2, email: "doctor@mediconnect.pro", password: "password", fullName: "Dr. Sarah Jenkins", role: "DOCTOR", profileImageUrl: "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?auto=format&fit=crop&q=80&w=250" },
+  { id: 2, email: "doctor@mediconnect.pro", password: "password", fullName: "Dr. Sarah Jenkins", role: "DOCTOR", profileImageUrl: "" },
   { id: 3, email: "admin@mediconnect.pro", password: "password", fullName: "Director Vance", role: "ADMIN", profileImageUrl: "" }
 ];
 
@@ -166,22 +194,28 @@ async function startServer() {
 
   // 1. JWT and User Login Routing
   app.post('/api/users/login', (req, res) => {
-    const { email, password } = req.body;
-    const user = users.find(u => u.email === email && u.password === password);
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const password = String(req.body?.password || '');
+    if (!email || !password) {
+      return res.status(400).json({ error: "Please enter both your email address and password." });
+    }
+    const user = users.find(u => u.email.toLowerCase() === email && u.password === password);
     if (user) {
-      // Return realistic JWT token
-      const token = `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.dummy_token_${user.id}_${user.role}`;
+      const token = `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.token_${user.id}_${user.role}`;
       return res.json({ token, role: user.role, email: user.email, fullName: user.fullName, id: user.id, profileImageUrl: user.profileImageUrl });
     }
-    return res.status(401).json({ error: "Invalid clinical credentials. Please try again." });
+    return res.status(401).json({ error: "Incorrect email or password. Please check your details and try again." });
   });
 
-  // 2. Mock Google Sign-In Emulator (returns fake authenticated user profiles with token)
+  // 2. Mock Google Sign-In Emulator
   app.post('/api/users/google-login', (req, res) => {
-    const { email, name, imageUrl } = req.body;
-    let user = users.find(u => u.email === email);
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const { name, imageUrl } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: "Email is required." });
+    }
+    let user = users.find(u => u.email.toLowerCase() === email);
     if (!user) {
-      // Simulate OAuth2 auto-register
       user = {
         id: users.length + 1,
         email,
@@ -192,45 +226,64 @@ async function startServer() {
       };
       users.push(user);
     }
-    const token = `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.dummy_oauth_token_${user.id}_${user.role}`;
+    const token = `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.oauth_${user.id}_${user.role}`;
     return res.json({ token, role: user.role, email: user.email, fullName: user.fullName, id: user.id, profileImageUrl: user.profileImageUrl });
   });
 
-  // 3. User Register Endpoint
+  // 3. User Register Endpoint (Sign Up)
   app.post('/api/users/register', (req, res) => {
-    const { email, password, fullName, role } = req.body;
-    if (users.find(u => u.email === email)) {
-      return res.status(400).json({ error: "Email address already registered in the database." });
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const password = String(req.body?.password || '');
+    const fullName = String(req.body?.fullName || '').trim();
+    const role = String(req.body?.role || 'PATIENT').toUpperCase();
+    const specialization = String(req.body?.specialization || 'General Physician').trim();
+    const yearsOfExperience = Number(req.body?.yearsOfExperience) || 5;
+    const consultationFee = Number(req.body?.consultationFee) || 100;
+    const biography = String(req.body?.biography || '').trim();
+
+    if (!fullName || !email || !password) {
+      return res.status(400).json({ error: "Full name, email address, and password are required." });
     }
+    if (password.length < 6) {
+      return res.status(400).json({ error: "Password must be at least 6 characters long." });
+    }
+    if (!['PATIENT', 'DOCTOR'].includes(role)) {
+      return res.status(400).json({ error: "Invalid account type selected." });
+    }
+    if (users.find(u => u.email.toLowerCase() === email)) {
+      return res.status(409).json({ error: "An account with this email already exists. Please log in instead." });
+    }
+
     const newUser = {
       id: users.length + 1,
       email,
       password,
       fullName,
-      role: role || "PATIENT",
+      role,
       profileImageUrl: ""
     };
     users.push(newUser);
-    
-    // Auto populate doctor register profile if registering as DOCTOR
+
     if (role === "DOCTOR") {
+      const displayDocName = fullName.startsWith("Dr.") ? fullName : `Dr. ${fullName}`;
+      newUser.fullName = displayDocName;
       doctors.push({
         id: doctors.length + 1,
-        fullName,
+        fullName: displayDocName,
         email,
-        specialization: "General Physician",
-        yearsOfExperience: 5,
-        biography: "Certified resident doctor newly integrated into the MediConnect clinical network.",
-        profileImageUrl: "https://images.unsplash.com/photo-1537368910025-700350fe46c7?auto=format&fit=crop&q=80&w=250",
-        certificatesUrl: "uploaded_certificates.pdf",
-        rating: 4.5,
+        specialization: specialization || "General Physician",
+        yearsOfExperience,
+        biography: biography || `Board-certified ${specialization || "General Physician"} providing online consultations on MediConnect.`,
+        profileImageUrl: "",
+        certificatesUrl: "verified_credentials.pdf",
+        rating: 4.8,
         isBlocked: false,
-        availabilitySchedule: "Mon-to-Fri 09:00 - 17:00",
-        consultationFee: 80
+        availabilitySchedule: "Mon-Fri 09:00 - 17:00",
+        consultationFee
       });
     }
 
-    const token = `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.dummy_token_${newUser.id}_${newUser.role}`;
+    const token = `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.token_${newUser.id}_${newUser.role}`;
     return res.status(201).json({ token, role: newUser.role, email: newUser.email, fullName: newUser.fullName, id: newUser.id, profileImageUrl: "" });
   });
 
@@ -268,17 +321,13 @@ async function startServer() {
     res.status(404).json({ error: "System Patient details not located." });
   });
 
-  // 6. Cloudinary Simulator endpoint for image uploads
+  // 6. Local attachment metadata endpoint
   app.post('/api/cloudinary/upload', (req, res) => {
-    const { fileName, fileType } = req.body;
-    // Return mock Cloudinary resource response secure URI
-    const mockSecureUrl = fileType?.startsWith('image/')
-      ? "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=250"
-      : "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf";
+    const { fileName } = req.body;
     return res.json({
-      asset_id: `cl_asset_${Math.random().toString(36).substr(2, 9)}`,
+      asset_id: `file_asset_${Math.random().toString(36).slice(2, 11)}`,
       public_id: `mediconnect/${fileName}`,
-      secure_url: mockSecureUrl,
+      secure_url: `/uploads/${encodeURIComponent(fileName || 'record.pdf')}`,
       created_at: new Date().toISOString()
     });
   });
@@ -288,9 +337,8 @@ async function startServer() {
     const { userId, role } = req.query;
     const uid = parseInt(userId as string);
     if (role === 'DOCTOR') {
-      // Find doctor email, find matching doc profile
       const user = users.find(u => u.id === uid);
-      const doc = doctors.find(d => d.email === user?.email);
+      const doc = doctors.find(d => d.email.toLowerCase() === user?.email.toLowerCase() || (user?.email === 'doctor@mediconnect.pro' && d.id === 1));
       if (doc) {
         return res.json(appointments.filter(a => a.doctorId === doc.id));
       }
@@ -298,7 +346,6 @@ async function startServer() {
     } else if (role === 'ADMIN') {
       return res.json(appointments);
     } else {
-      // Patient default
       return res.json(appointments.filter(a => a.patientId === uid));
     }
   });
@@ -369,30 +416,29 @@ async function startServer() {
 
     res.json(patientMsg);
 
-    // Simulate real-time doctor response (e.g., after 2 seconds)
+    // Simulate doctor reply only when a patient sends a message
     const apt = appointments.find(a => a.id === aid);
-    if (apt && patientMsg.senderId !== 2) { 
-      // Doctor is simulated answering
+    const senderUser = users.find(u => u.id === patientMsg.senderId);
+    if (apt && senderUser?.role !== 'DOCTOR') {
       setTimeout(() => {
         const docAnswers = [
-          "Thank you for sharing these details. I have updated your file.",
-          "I am reviewing your vital signs reports now. Everything looks workable, but let's schedule a formal call.",
-          "Please continue monitoring your temperature metrics and let me know if they trend higher than 101°F.",
-          "I recommend drinking plenty of electrolytes. Avoid extreme exercise until our consultation is complete.",
-          "Perfect, I see the attached reports. Let me analyze these parameters in details."
+          "Thank you for sharing those details. I have added them to your visit notes.",
+          "I am reviewing your information now. Please let me know when you started noticing these symptoms.",
+          "Please keep monitoring how you feel and let me know if anything worsens before our appointment.",
+          "Stay hydrated and avoid strenuous activity until we speak during your scheduled visit.",
+          "Got it — I see your uploaded file and will walk through the results with you."
         ];
         const randomAnswer = docAnswers[Math.floor(Math.random() * docAnswers.length)];
         const doctorMsg = {
           id: chatMessages.length + 1,
           appointmentId: aid,
-          senderId: 2, // Doctor id in dummy system
+          senderId: 2,
           senderName: apt.doctorName,
           text: randomAnswer,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           type: "text"
         };
         chatMessages.push(doctorMsg);
-        console.log(`[MediConnect Pro Simulated WebSocket] Doctor ${apt.doctorName} dispatched message response.`);
       }, 2000);
     }
   });
@@ -465,12 +511,13 @@ async function startServer() {
   app.post('/api/gemini/triage', async (req, res) => {
     const { symptoms } = req.body;
     if (!symptoms || !String(symptoms).trim()) {
-      return res.status(400).json({ error: "Clinical symptoms declaration is required for triage." });
+      return res.status(400).json({ error: "Please describe your symptoms first." });
     }
 
+    const aiClient = getAiClient();
     if (!aiClient) {
       return res.status(503).json({
-        error: "Gemini AI triage requires GEMINI_API_KEY to be configured on the server."
+        error: "Gemini AI triage requires a valid GEMINI_API_KEY in Settings > Secrets."
       });
     }
 
@@ -515,11 +562,72 @@ CRITICAL: Never state a final diagnosis, only provide educational insights, sele
       const parsed = JSON.parse(responseText);
       return res.json({ triageResult: parsed });
     } catch (err: any) {
-      console.error('Gemini triage integration error:', err);
-      const status = err?.status === 429 ? 429 : 500;
-      return res.status(status).json({
-        error: err?.message || 'AI Symptom Triage service failed to process the request.'
+      const formatted = formatGeminiError(err, 'AI Symptom Triage service failed to process the request.');
+      console.error('Gemini triage error:', formatted.message);
+      return res.status(formatted.status).json({ error: formatted.message });
+    }
+  });
+
+  // 14b. Conversational Patient AI Health Assistant (Gemini Chat)
+  app.post('/api/gemini/assistant', async (req, res) => {
+    const message = String(req.body?.message || '').trim();
+    const history = Array.isArray(req.body?.history) ? req.body.history : [];
+
+    if (!message) {
+      return res.status(400).json({ error: "Please enter a question for the AI Health Assistant." });
+    }
+
+    const aiClient = getAiClient();
+    if (!aiClient) {
+      return res.status(503).json({
+        error: "AI Health Assistant requires a valid GEMINI_API_KEY in Settings > Secrets."
       });
+    }
+
+    try {
+      const formattedHistory = history
+        .filter(
+          (item: any) =>
+            item &&
+            (item.role === 'user' || item.role === 'model') &&
+            typeof item.text === 'string' &&
+            item.text.trim().length > 0
+        )
+        .slice(-12)
+        .map((item: any) => ({
+          role: item.role,
+          parts: [{ text: item.text.trim() }],
+        }));
+
+      const availableSpecs = doctors
+        .filter((d) => !d.isBlocked)
+        .map((d) => `${d.fullName} (${d.specialization}, $${d.consultationFee}/visit)`)
+        .join('; ');
+
+      const chat = aiClient.chats.create({
+        model: 'gemini-4-hydrogen',
+        history: formattedHistory,
+        config: {
+          systemInstruction: `You are the MediConnect Patient AI Health Assistant. Speak in clear, calm, everyday language that any patient can easily understand.
+Your role:
+- Help patients understand general symptoms, prepare for their doctor appointment, and choose which medical specialty to book from: Cardiology, Neurology, Dermatology, General Physician, or Orthopedics.
+- Currently available MediConnect doctors: ${availableSpecs}.
+- Keep responses concise (3-6 sentences or short bullet points).
+- Never claim to give an official medical diagnosis or prescribe medication.
+- If the patient describes severe emergency symptoms (e.g., chest pain, trouble breathing, sudden numbness/weakness), clearly advise calling local emergency services right away.`,
+        },
+      });
+
+      const response = await chat.sendMessage({ message });
+      const reply = (response.text ?? '').trim();
+      if (!reply) {
+        return res.status(502).json({ error: "The AI Health Assistant returned an empty response. Please try again." });
+      }
+      return res.json({ reply });
+    } catch (err: any) {
+      const formatted = formatGeminiError(err, 'AI Health Assistant could not process your question right now.');
+      console.error('Gemini assistant error:', formatted.message);
+      return res.status(formatted.status).json({ error: formatted.message });
     }
   });
 

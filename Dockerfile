@@ -2,8 +2,10 @@
 FROM node:22-alpine AS build
 WORKDIR /app
 
-COPY package.json package-lock.json* ./
-RUN npm install --no-audit --no-fund
+COPY package.json ./
+RUN rm -rf node_modules package-lock.json \
+    && npm cache clean --force \
+    && npm install --no-audit --no-fund
 
 COPY . .
 RUN npm run build
@@ -15,8 +17,10 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
 
-COPY package.json package-lock.json* ./
-RUN npm install --omit=dev --no-audit --no-fund
+COPY package.json ./
+RUN rm -rf node_modules package-lock.json \
+    && npm cache clean --force \
+    && npm install --omit=dev --no-audit --no-fund
 
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/backend ./backend
@@ -24,6 +28,7 @@ COPY --from=build /app/gateway ./gateway
 COPY --from=build /app/database ./database
 COPY --from=build /app/k8s ./k8s
 COPY --from=build /app/docker-compose.yml ./docker-compose.yml
+COPY --from=build /app/Dockerfile ./Dockerfile
 COPY --from=build /app/Jenkinsfile ./Jenkinsfile
 
 EXPOSE 3000
