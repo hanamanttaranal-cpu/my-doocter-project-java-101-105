@@ -13,9 +13,10 @@ COPY my.cnf /etc/mysql/conf.d/mediconnect.cnf
 # Initialization SQL schema & seed data (runs automatically on fresh volume initialization)
 COPY init.sql /docker-entrypoint-initdb.d/01-init.sql
 
-RUN chmod 644 /etc/mysql/conf.d/mediconnect.cnf /docker-entrypoint-initdb.d/01-init.sql
+RUN sed -i 's/\r$//' /etc/mysql/conf.d/mediconnect.cnf /docker-entrypoint-initdb.d/01-init.sql \
+    && chmod 644 /etc/mysql/conf.d/mediconnect.cnf /docker-entrypoint-initdb.d/01-init.sql
 
 EXPOSE 3306
 
-HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=10 \
+HEALTHCHECK --interval=10s --timeout=5s --start-period=45s --retries=12 \
   CMD mysqladmin ping -h 127.0.0.1 -u root -p"${MYSQL_ROOT_PASSWORD}" --silent || exit 1

@@ -14,11 +14,11 @@ services:
     networks:
       - mediconnect-network
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root", "-prootpassword"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root", "-prootpassword", "--silent"]
       interval: 10s
       timeout: 5s
-      retries: 10
-      start_period: 30s
+      retries: 12
+      start_period: 45s
 
   redis-cache:
     image: redis:7.2-alpine
