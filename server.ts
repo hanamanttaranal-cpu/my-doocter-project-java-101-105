@@ -39,7 +39,7 @@ function getAiClient(): GoogleGenAI | null {
 
 function formatGeminiError(err: any, fallbackMessage: string): { status: number; message: string } {
   const rawMsg = String(err?.message || '');
-  if (rawMsg.includes('API_KEY_INVALID') || rawMsg.includes('API key not valid') || err?.status === 400) {
+  if (rawMsg.includes('API_KEY_INVALID') || rawMsg.includes('API key not valid')) {
     return {
       status: 400,
       message: 'The Gemini API key is invalid. Please check or update your GEMINI_API_KEY in the Settings > Secrets panel.',
@@ -48,19 +48,58 @@ function formatGeminiError(err: any, fallbackMessage: string): { status: number;
   if (rawMsg.includes('PERMISSION_DENIED') || err?.status === 403) {
     return {
       status: 403,
-      message: 'Gemini API access was denied. Please verify your GEMINI_API_KEY permissions in the Settings > Secrets panel.',
+      message: 'Gemini API access was denied. Please verify your GEMINI_API_KEY in the Settings > Secrets panel.',
     };
   }
   if (rawMsg.includes('RESOURCE_EXHAUSTED') || err?.status === 429) {
     return {
       status: 429,
-      message: 'Gemini API quota exceeded. Please wait a moment or check your plan in Settings > Secrets.',
+      message: 'Gemini API quota exceeded. Please wait a moment or check your key billing/plan in Settings > Secrets.',
+    };
+  }
+  if (rawMsg.includes('NOT_FOUND') || err?.status === 404) {
+    return {
+      status: 404,
+      message: 'The configured Gemini model could not be found. Please try again shortly.',
+    };
+  }
+  if (err?.status === 400) {
+    let parsedReason = rawMsg;
+    try {
+      const jsonErr = JSON.parse(rawMsg);
+      if (jsonErr?.error?.message) {
+        parsedReason = jsonErr.error.message;
+      }
+    } catch {
+      // keep rawMsg
+    }
+    return {
+      status: 400,
+      message: parsedReason || fallbackMessage,
     };
   }
   return {
     status: 500,
     message: rawMsg || fallbackMessage,
   };
+}
+
+async function withGeminiRetry<T>(operation: () => Promise<T>, maxAttempts = 2): Promise<T> {
+  let lastErr: any;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await operation();
+    } catch (err: any) {
+      lastErr = err;
+      const status = Number(err?.status || 0);
+      const isRetryable = status === 429 || status === 500 || status === 503;
+      if (!isRetryable || attempt === maxAttempts) {
+        throw err;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 400 * attempt));
+    }
+  }
+  throw lastErr;
 }
 
 // In-Memory Database representing MySQL tables with pre-built clinical mock records
@@ -752,36 +791,38 @@ A patient has provided the following symptoms: "${symptoms}".
 Perform a safe, educational medical triage evaluation.
 CRITICAL: Never state a final diagnosis, only provide educational insights, select the best matching clinical specialty from: [Cardiology, Neurology, Dermatology, General Physician, Orthopedics], define an estimated urgency level: [Low, Medium, High], and list EXACTLY 3 helpful questions the patient should prepare to ask their consultant during their online call.`;
 
-      const response = await aiClient.models.generateContent({
-        model: 'gemini-4-hydrogen',
-        contents: triagePrompt,
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              specialty: {
-                type: Type.STRING,
-                description: 'Best matching specialty from Cardiology, Neurology, Dermatology, General Physician, Orthopedics'
+      const response = await withGeminiRetry(() =>
+        aiClient.models.generateContent({
+          model: 'gemini-4-hydrogen',
+          contents: triagePrompt,
+          config: {
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                specialty: {
+                  type: Type.STRING,
+                  description: 'Best matching specialty from Cardiology, Neurology, Dermatology, General Physician, Orthopedics'
+                },
+                urgency: {
+                  type: Type.STRING,
+                  description: 'Low, Medium, or High'
+                },
+                insights: {
+                  type: Type.STRING,
+                  description: 'Detailed educational insight with warning instructions to call emergency services if symptoms turn severe'
+                },
+                questionsToAsk: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                  description: 'Exactly 3 helpful questions for the patient to ask their doctor'
+                }
               },
-              urgency: {
-                type: Type.STRING,
-                description: 'Low, Medium, or High'
-              },
-              insights: {
-                type: Type.STRING,
-                description: 'Detailed educational insight with warning instructions to call emergency services if symptoms turn severe'
-              },
-              questionsToAsk: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-                description: 'Exactly 3 helpful questions for the patient to ask their doctor'
-              }
-            },
-            required: ['specialty', 'urgency', 'insights', 'questionsToAsk']
+              required: ['specialty', 'urgency', 'insights', 'questionsToAsk']
+            }
           }
-        }
-      });
+        })
+      );
 
       const responseText = (response.text ?? '{}').trim();
       const parsed = JSON.parse(responseText);
@@ -835,7 +876,7 @@ CRITICAL: Never state a final diagnosis, only provide educational insights, sele
 
       const chat = aiClient.chats.create({
         model: 'gemini-4-hydrogen',
-        history: formattedHistory,
+        ...(formattedHistory.length > 0 ? { history: formattedHistory } : {}),
         config: {
           systemInstruction: `You are the MediConnect Patient AI Health Assistant. Speak in clear, calm, everyday language that any patient can easily understand.
 Your role:
@@ -847,7 +888,7 @@ Your role:
         },
       });
 
-      const response = await chat.sendMessage({ message });
+      const response = await withGeminiRetry(() => chat.sendMessage({ message }));
       const reply = (response.text ?? '').trim();
       if (!reply) {
         return res.status(502).json({ error: "The AI Health Assistant returned an empty response. Please try again." });
@@ -956,10 +997,12 @@ Your role:
     fullName?: string;
     role?: string;
     appointmentId?: number;
+    videoAppointmentId?: number;
   }
 
   const clientMeta = new Map<WebSocket, WsClientMeta>();
   const chatRooms = new Map<number, Set<WebSocket>>();
+  const videoRooms = new Map<number, Set<WebSocket>>();
 
   const emitPresenceForRoom = (aid: number) => {
     const room = chatRooms.get(aid);
@@ -1005,6 +1048,106 @@ Your role:
     }
   };
 
+  const emitVideoPeers = (aid: number) => {
+    const room = videoRooms.get(aid);
+    if (!room) return;
+    const peersMap = new Map<number, { userId: number; fullName: string; role: string }>();
+    room.forEach((ws) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        const meta = clientMeta.get(ws);
+        if (meta?.userId) {
+          peersMap.set(meta.userId, {
+            userId: meta.userId,
+            fullName: meta.fullName || 'User',
+            role: meta.role || 'PATIENT',
+          });
+        }
+      }
+    });
+    const payload = JSON.stringify({
+      type: 'video:peers',
+      appointmentId: aid,
+      peers: Array.from(peersMap.values()),
+    });
+    room.forEach((ws) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(payload);
+      }
+    });
+  };
+
+  const broadcastToVideoRoom = (aid: number, payload: unknown, excludeSocket?: WebSocket) => {
+    const room = videoRooms.get(aid);
+    if (!room) return;
+    const raw = JSON.stringify(payload);
+    room.forEach((ws) => {
+      if (ws !== excludeSocket && ws.readyState === WebSocket.OPEN) {
+        ws.send(raw);
+      }
+    });
+  };
+
+  const leaveVideoRoom = (ws: WebSocket) => {
+    const meta = clientMeta.get(ws);
+    if (meta?.videoAppointmentId) {
+      const aid = meta.videoAppointmentId;
+      const prevRoom = videoRooms.get(aid);
+      if (prevRoom) {
+        prevRoom.delete(ws);
+        if (prevRoom.size === 0) {
+          videoRooms.delete(aid);
+        } else {
+          broadcastToVideoRoom(aid, {
+            type: 'video:ended',
+            appointmentId: aid,
+            userId: meta.userId,
+            fullName: meta.fullName || 'Participant',
+          });
+          emitVideoPeers(aid);
+        }
+      }
+      meta.videoAppointmentId = undefined;
+    }
+  };
+
+  const notifyAppointmentCounterparty = (
+    aid: number,
+    senderSocket: WebSocket,
+    senderRole: string,
+    payload: unknown
+  ) => {
+    const apt = appointments.find((a) => a.id === aid);
+    const raw = JSON.stringify(payload);
+    const doc = apt ? doctors.find((d) => d.id === apt.doctorId) : null;
+
+    wss.clients.forEach((client) => {
+      if (client === senderSocket || client.readyState !== WebSocket.OPEN) return;
+      const targetMeta = clientMeta.get(client);
+      if (!targetMeta?.userId) return;
+
+      if (!apt) {
+        client.send(raw);
+        return;
+      }
+
+      if (senderRole === 'PATIENT') {
+        const targetUser = users.find((u) => u.id === targetMeta.userId);
+        const isTargetDoctor =
+          targetMeta.role === 'DOCTOR' &&
+          (targetUser?.email.toLowerCase() === doc?.email.toLowerCase() ||
+            (targetUser?.email === 'doctor@mediconnect.pro' && apt.doctorId === 1) ||
+            !doc);
+        if (isTargetDoctor) {
+          client.send(raw);
+        }
+      } else if (senderRole === 'DOCTOR') {
+        if (targetMeta.role === 'PATIENT' && targetMeta.userId === apt.patientId) {
+          client.send(raw);
+        }
+      }
+    });
+  };
+
   broadcastToRoom = (appointmentId: number, payload: unknown, excludeSocket?: WebSocket) => {
     const room = chatRooms.get(appointmentId);
     if (!room) return;
@@ -1032,6 +1175,15 @@ Your role:
       try {
         const event = JSON.parse(rawData.toString());
         const eventType = String(event?.type || '');
+
+        if (eventType === 'auth:identify') {
+          const meta = clientMeta.get(ws) || {};
+          meta.userId = Number(event.userId) || meta.userId;
+          meta.fullName = String(event.fullName || meta.fullName || 'User');
+          meta.role = String(event.role || meta.role || 'PATIENT').toUpperCase();
+          clientMeta.set(ws, meta);
+          return;
+        }
 
         if (eventType === 'chat:join') {
           const aid = Number(event.appointmentId);
@@ -1104,6 +1256,112 @@ Your role:
           return;
         }
 
+        if (eventType === 'video:invite') {
+          const aid = Number(event.appointmentId);
+          if (!aid) return;
+          const apt = appointments.find((a) => a.id === aid);
+          const callerRole = String(event.callerRole || 'PATIENT').toUpperCase();
+          notifyAppointmentCounterparty(aid, ws, callerRole, {
+            type: 'video:incoming',
+            appointmentId: aid,
+            callerId: Number(event.callerId),
+            callerName: String(event.callerName || 'Caller'),
+            callerRole,
+            appointment: apt || event.appointment,
+          });
+          return;
+        }
+
+        if (eventType === 'video:accept') {
+          const aid = Number(event.appointmentId);
+          if (!aid) return;
+          const meta = clientMeta.get(ws);
+          const accepterRole = String(event.accepterRole || event.role || meta?.role || 'DOCTOR').toUpperCase();
+          notifyAppointmentCounterparty(aid, ws, accepterRole, {
+            type: 'video:accepted',
+            appointmentId: aid,
+            accepterId: Number(event.accepterId || event.userId || meta?.userId || 0),
+            accepterName: String(event.accepterName || event.fullName || meta?.fullName || 'Participant'),
+          });
+          return;
+        }
+
+        if (eventType === 'video:decline') {
+          const aid = Number(event.appointmentId);
+          if (!aid) return;
+          const meta = clientMeta.get(ws);
+          const declinerRole = String(event.declinerRole || event.role || meta?.role || 'DOCTOR').toUpperCase();
+          notifyAppointmentCounterparty(aid, ws, declinerRole, {
+            type: 'video:declined',
+            appointmentId: aid,
+            declinerId: Number(event.declinerId || event.userId || meta?.userId || 0),
+            declinerName: String(event.declinerName || event.fullName || meta?.fullName || 'Participant'),
+          });
+          return;
+        }
+
+        if (eventType === 'video:join') {
+          const aid = Number(event.appointmentId);
+          if (!aid) return;
+          leaveVideoRoom(ws);
+          const meta = clientMeta.get(ws) || {};
+          meta.userId = Number(event.userId) || meta.userId;
+          meta.fullName = String(event.fullName || meta.fullName || 'User');
+          meta.role = String(event.role || meta.role || 'PATIENT').toUpperCase();
+          meta.videoAppointmentId = aid;
+          clientMeta.set(ws, meta);
+
+          if (!videoRooms.has(aid)) {
+            videoRooms.set(aid, new Set());
+          }
+          videoRooms.get(aid)!.add(ws);
+          emitVideoPeers(aid);
+          return;
+        }
+
+        if (eventType === 'video:leave') {
+          leaveVideoRoom(ws);
+          return;
+        }
+
+        if (eventType === 'video:signal') {
+          const aid = Number(event.appointmentId);
+          if (!aid) return;
+          const meta = clientMeta.get(ws);
+          broadcastToVideoRoom(
+            aid,
+            {
+              type: 'video:signal',
+              appointmentId: aid,
+              senderId: meta?.userId || Number(event.senderId),
+              senderRole: meta?.role || String(event.senderRole || 'PATIENT'),
+              signalType: event.signalType,
+              sdp: event.sdp,
+              candidate: event.candidate,
+            },
+            ws
+          );
+          return;
+        }
+
+        if (eventType === 'video:media-state') {
+          const aid = Number(event.appointmentId);
+          if (!aid) return;
+          const meta = clientMeta.get(ws);
+          broadcastToVideoRoom(
+            aid,
+            {
+              type: 'video:media-state',
+              appointmentId: aid,
+              userId: meta?.userId || Number(event.userId),
+              audioEnabled: Boolean(event.audioEnabled),
+              videoEnabled: Boolean(event.videoEnabled),
+            },
+            ws
+          );
+          return;
+        }
+
         if (eventType === 'support:send') {
           const ticketId = Number(event.ticketId);
           const cleanText = String(event.text || '').trim();
@@ -1152,6 +1410,7 @@ Your role:
 
     ws.on('close', () => {
       leaveCurrentRoom(ws);
+      leaveVideoRoom(ws);
       clientMeta.delete(ws);
     });
   });

@@ -107,6 +107,14 @@ export interface SupportTicket {
   messages: SupportTicketMessage[];
 }
 
+export interface IncomingVideoCall {
+  appointmentId: number;
+  callerId: number;
+  callerName: string;
+  callerRole: UserRole;
+  appointment: Appointment;
+}
+
 export interface DevFileNode {
   name: string;
   type: 'file' | 'directory';

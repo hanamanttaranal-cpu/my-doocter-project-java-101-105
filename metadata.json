@@ -1,6 +1,6 @@
 {
   "name": "MediConnect Pro",
   "description": "Advanced Online Doctor Consultation Platform with patient, doctor, and admin portals, health analytics, and real-time chat simulations.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": ["camera", "microphone"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
