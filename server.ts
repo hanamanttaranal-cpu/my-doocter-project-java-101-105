@@ -14,7 +14,10 @@ let cachedKey = '';
 let cachedClient: GoogleGenAI | null = null;
 
 function getAiClient(): GoogleGenAI | null {
-  const rawKey = (process.env.GEMINI_API_KEY || '').trim();
+  const rawKey = (process.env.GEMINI_API_KEY || '')
+    .trim()
+    .replace(/^["']|["']$/g, '')
+    .trim();
   if (!rawKey || rawKey === 'MY_GEMINI_API_KEY' || rawKey === 'your_gemini_api_key') {
     return null;
   }
@@ -563,7 +566,11 @@ CRITICAL: Never state a final diagnosis, only provide educational insights, sele
       return res.json({ triageResult: parsed });
     } catch (err: any) {
       const formatted = formatGeminiError(err, 'AI Symptom Triage service failed to process the request.');
-      console.error('Gemini triage error:', formatted.message);
+      if (formatted.status >= 500) {
+        console.error('Gemini triage error:', formatted.message);
+      } else {
+        console.warn('Gemini triage notice:', formatted.message);
+      }
       return res.status(formatted.status).json({ error: formatted.message });
     }
   });
@@ -626,7 +633,11 @@ Your role:
       return res.json({ reply });
     } catch (err: any) {
       const formatted = formatGeminiError(err, 'AI Health Assistant could not process your question right now.');
-      console.error('Gemini assistant error:', formatted.message);
+      if (formatted.status >= 500) {
+        console.error('Gemini assistant error:', formatted.message);
+      } else {
+        console.warn('Gemini assistant notice:', formatted.message);
+      }
       return res.status(formatted.status).json({ error: formatted.message });
     }
   });

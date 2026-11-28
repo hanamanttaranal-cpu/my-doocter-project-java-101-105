@@ -4,7 +4,7 @@ LABEL maintainer="MediConnect Pro DevOps"
 LABEL description="Custom MySQL 8.0 database image with pre-configured schema and clinical seed data for Docker and AWS EKS"
 
 ENV MYSQL_DATABASE=mediconnect_db
-ENV MYSQL_ROOT_PASSWORD=rootpassword
+ENV MYSQL_ROOT_PASSWORD=123456
 ENV TZ=UTC
 
 # Custom MySQL configuration tuned for container/Kubernetes workloads
