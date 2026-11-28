@@ -52,6 +52,26 @@ type ThemeMode = 'light' | 'dark';
 const SESSION_STORAGE_KEY = 'mediconnect_user_session';
 const THEME_STORAGE_KEY = 'mediconnect_theme';
 
+const VIEW_TO_PATH: Record<ViewKey, string> = {
+  auth: '/login',
+  patient: '/patients',
+  doctor: '/doctor',
+  admin: '/admin',
+  support: '/support',
+  devops: '/architecture',
+};
+
+function resolveViewFromPath(pathname: string): ViewKey | null {
+  const clean = pathname.replace(/\/+$/, '').toLowerCase() || '/';
+  if (clean === '/patients' || clean === '/patienst' || clean === '/patient') return 'patient';
+  if (clean === '/doctor' || clean === '/docter' || clean === '/doctors') return 'doctor';
+  if (clean === '/admin' || clean === '/admins') return 'admin';
+  if (clean === '/support') return 'support';
+  if (clean === '/architecture' || clean === '/devops') return 'devops';
+  if (clean === '/login' || clean === '/signup' || clean === '/auth') return 'auth';
+  return null;
+}
+
 export default function App() {
   const [user, setUser] = useState<UserSession | null>(() => {
     try {
@@ -63,6 +83,8 @@ export default function App() {
   });
 
   const [activeView, setActiveView] = useState<ViewKey>(() => {
+    const pathView = resolveViewFromPath(window.location.pathname);
+    if (pathView) return pathView;
     try {
       const saved = localStorage.getItem(SESSION_STORAGE_KEY);
       if (saved) {
@@ -77,7 +99,9 @@ export default function App() {
     return 'auth';
   });
 
-  const [authInitialMode, setAuthInitialMode] = useState<'login' | 'signup'>('login');
+  const [authInitialMode, setAuthInitialMode] = useState<'login' | 'signup'>(() =>
+    window.location.pathname.toLowerCase().startsWith('/signup') ? 'signup' : 'login'
+  );
   const [pendingBookingDoctor, setPendingBookingDoctor] = useState<Doctor | null>(null);
 
   // Domain Data State
@@ -169,6 +193,38 @@ export default function App() {
       setToastMessage(null);
     }, 4000);
   };
+
+  const navigateView = (nextView: ViewKey, replace = false) => {
+    setActiveView(nextView);
+    const targetPath = VIEW_TO_PATH[nextView];
+    const currentViewFromUrl = resolveViewFromPath(window.location.pathname);
+    if (currentViewFromUrl !== nextView || window.location.pathname === '/') {
+      if (replace) {
+        window.history.replaceState({}, '', targetPath);
+      } else {
+        window.history.pushState({}, '', targetPath);
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (window.location.pathname === '/') {
+      window.history.replaceState({}, '', VIEW_TO_PATH[activeView]);
+    }
+    const handlePopState = () => {
+      const matched = resolveViewFromPath(window.location.pathname);
+      if (matched) {
+        setActiveView(matched);
+      } else if (userRef.current) {
+        const role = userRef.current.role;
+        setActiveView(role === 'DOCTOR' ? 'doctor' : role === 'ADMIN' ? 'admin' : 'patient');
+      } else {
+        setActiveView('auth');
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
@@ -604,26 +660,47 @@ export default function App() {
     setActiveChatAppointment(null);
 
     if (session.role === 'DOCTOR') {
-      setActiveView('doctor');
+      navigateView('doctor');
       showToast(isNewAccount ? `Account created. Welcome, ${session.fullName}.` : `Welcome back, ${session.fullName}.`);
       setPendingBookingDoctor(null);
       return;
     }
 
     if (session.role === 'ADMIN') {
-      setActiveView('admin');
+      navigateView('admin');
       showToast(`Signed in as ${session.fullName}.`);
       setPendingBookingDoctor(null);
       return;
     }
 
-    setActiveView('patient');
+    navigateView('patient');
     showToast(isNewAccount ? `Account created. Welcome, ${session.fullName}!` : `Welcome back, ${session.fullName}.`);
 
     if (pendingBookingDoctor) {
       setSelectedDoctor(pendingBookingDoctor);
       setIsBookingOpen(true);
       setPendingBookingDoctor(null);
+    }
+  };
+
+  const handleQuickDemoRoleLogin = async (role: 'DOCTOR' | 'ADMIN' | 'PATIENT') => {
+    const email =
+      role === 'DOCTOR'
+        ? 'doctor@mediconnect.pro'
+        : role === 'ADMIN'
+        ? 'admin@mediconnect.pro'
+        : 'patient@mediconnect.pro';
+    try {
+      const res = await fetch('/api/users/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password: 'password' }),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      handleAuthSuccess(data as UserSession, false);
+    } catch (e) {
+      console.error(e);
     }
   };
 
@@ -637,13 +714,13 @@ export default function App() {
       // ignore
     }
     setAuthInitialMode('login');
-    setActiveView('auth');
+    navigateView('auth');
     showToast('You have been logged out.');
   };
 
   const openAuthScreen = (mode: 'login' | 'signup') => {
     setAuthInitialMode(mode);
-    setActiveView('auth');
+    navigateView('auth');
   };
 
   // --- Clinical Workflows ---
@@ -731,7 +808,7 @@ export default function App() {
     if (!user) {
       setPendingBookingDoctor(doc);
       setAuthInitialMode('signup');
-      setActiveView('auth');
+      navigateView('auth');
       showToast(`Create an account or log in to book a visit with ${doc.fullName}.`);
       return;
     }
@@ -940,7 +1017,7 @@ export default function App() {
 
   const scrollToSection = (sectionId: string) => {
     if (activeView !== 'patient') {
-      setActiveView('patient');
+      navigateView('patient');
       window.setTimeout(() => {
         document.getElementById(sectionId)?.scrollIntoView({ behavior: 'smooth' });
       }, 80);
@@ -1202,13 +1279,13 @@ export default function App() {
             type="button"
             onClick={() => {
               if (!user) {
-                setActiveView('auth');
+                navigateView('auth');
               } else if (user.role === 'DOCTOR') {
-                setActiveView('doctor');
+                navigateView('doctor');
               } else if (user.role === 'ADMIN') {
-                setActiveView('admin');
+                navigateView('admin');
               } else {
-                setActiveView('patient');
+                navigateView('patient');
               }
             }}
             className="text-lg font-bold tracking-tight text-slate-900 dark:text-slate-100 whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-2"
@@ -1223,25 +1300,40 @@ export default function App() {
               <>
                 <button
                   type="button"
-                  onClick={() => setActiveView('patient')}
+                  onClick={() => navigateView('patient')}
                   className={`py-1 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
                     activeView === 'patient'
                       ? 'text-slate-900 dark:text-white underline underline-offset-8 decoration-2 decoration-teal-700 dark:decoration-teal-400'
                       : 'hover:text-slate-900 dark:hover:text-white'
                   }`}
                 >
-                  Find Doctors
+                  Patients
                 </button>
                 <button
                   type="button"
-                  onClick={() => scrollToSection('symptom-helper')}
-                  className="py-1 whitespace-nowrap shrink-0 cursor-pointer hover:text-slate-900 dark:hover:text-white transition-colors"
+                  onClick={() => navigateView('doctor')}
+                  className={`py-1 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                    activeView === 'doctor'
+                      ? 'text-slate-900 dark:text-white underline underline-offset-8 decoration-2 decoration-teal-700 dark:decoration-teal-400'
+                      : 'hover:text-slate-900 dark:hover:text-white'
+                  }`}
                 >
-                  AI Assistant
+                  Doctor
                 </button>
                 <button
                   type="button"
-                  onClick={() => setActiveView('support')}
+                  onClick={() => navigateView('admin')}
+                  className={`py-1 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                    activeView === 'admin'
+                      ? 'text-slate-900 dark:text-white underline underline-offset-8 decoration-2 decoration-teal-700 dark:decoration-teal-400'
+                      : 'hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  Admin
+                </button>
+                <button
+                  type="button"
+                  onClick={() => navigateView('support')}
                   className={`py-1 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
                     activeView === 'support'
                       ? 'text-slate-900 dark:text-white underline underline-offset-8 decoration-2 decoration-teal-700 dark:decoration-teal-400'
@@ -1249,17 +1341,6 @@ export default function App() {
                   }`}
                 >
                   Support
-                </button>
-                <button
-                  type="button"
-                  onClick={() => openAuthScreen('login')}
-                  className={`py-1 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
-                    activeView === 'auth'
-                      ? 'text-slate-900 dark:text-white underline underline-offset-8 decoration-2 decoration-teal-700 dark:decoration-teal-400'
-                      : 'hover:text-slate-900 dark:hover:text-white'
-                  }`}
-                >
-                  Sign In
                 </button>
               </>
             )}
@@ -1293,7 +1374,7 @@ export default function App() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setActiveView('support')}
+                  onClick={() => navigateView('support')}
                   className={`py-1 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
                     activeView === 'support'
                       ? 'text-slate-900 dark:text-white underline underline-offset-8 decoration-2 decoration-teal-700 dark:decoration-teal-400'
@@ -1309,7 +1390,7 @@ export default function App() {
               <>
                 <button
                   type="button"
-                  onClick={() => setActiveView('doctor')}
+                  onClick={() => navigateView('doctor')}
                   className={`py-1 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
                     activeView === 'doctor'
                       ? 'text-slate-900 dark:text-white underline underline-offset-8 decoration-2 decoration-teal-700 dark:decoration-teal-400'
@@ -1320,7 +1401,7 @@ export default function App() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setActiveView('patient')}
+                  onClick={() => navigateView('patient')}
                   className={`py-1 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
                     activeView === 'patient'
                       ? 'text-slate-900 dark:text-white underline underline-offset-8 decoration-2 decoration-teal-700 dark:decoration-teal-400'
@@ -1331,7 +1412,7 @@ export default function App() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setActiveView('support')}
+                  onClick={() => navigateView('support')}
                   className={`py-1 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
                     activeView === 'support'
                       ? 'text-slate-900 dark:text-white underline underline-offset-8 decoration-2 decoration-teal-700 dark:decoration-teal-400'
@@ -1342,7 +1423,7 @@ export default function App() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setActiveView('devops')}
+                  onClick={() => navigateView('devops')}
                   className={`py-1 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
                     activeView === 'devops'
                       ? 'text-slate-900 dark:text-white underline underline-offset-8 decoration-2 decoration-teal-700 dark:decoration-teal-400'
@@ -1358,7 +1439,7 @@ export default function App() {
               <>
                 <button
                   type="button"
-                  onClick={() => setActiveView('admin')}
+                  onClick={() => navigateView('admin')}
                   className={`py-1 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
                     activeView === 'admin'
                       ? 'text-slate-900 dark:text-white underline underline-offset-8 decoration-2 decoration-teal-700 dark:decoration-teal-400'
@@ -1369,7 +1450,7 @@ export default function App() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setActiveView('support')}
+                  onClick={() => navigateView('support')}
                   className={`py-1 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
                     activeView === 'support'
                       ? 'text-slate-900 dark:text-white underline underline-offset-8 decoration-2 decoration-teal-700 dark:decoration-teal-400'
@@ -1380,7 +1461,7 @@ export default function App() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setActiveView('patient')}
+                  onClick={() => navigateView('patient')}
                   className={`py-1 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
                     activeView === 'patient'
                       ? 'text-slate-900 dark:text-white underline underline-offset-8 decoration-2 decoration-teal-700 dark:decoration-teal-400'
@@ -1391,7 +1472,7 @@ export default function App() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setActiveView('devops')}
+                  onClick={() => navigateView('devops')}
                   className={`py-1 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
                     activeView === 'devops'
                       ? 'text-slate-900 dark:text-white underline underline-offset-8 decoration-2 decoration-teal-700 dark:decoration-teal-400'
@@ -1423,7 +1504,7 @@ export default function App() {
             ) : activeView === 'auth' ? (
               <button
                 type="button"
-                onClick={() => setActiveView('patient')}
+                onClick={() => navigateView('patient')}
                 className="px-4 py-2 text-xs font-semibold text-white bg-slate-900 dark:bg-teal-700 hover:bg-slate-800 dark:hover:bg-teal-800 rounded-lg transition-colors cursor-pointer whitespace-nowrap shrink-0"
               >
                 Browse Doctors
@@ -1445,10 +1526,10 @@ export default function App() {
       <div className="md:hidden bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 py-2.5 flex items-center gap-5 overflow-x-auto text-xs font-medium text-slate-600 dark:text-slate-300">
         {!user && (
           <>
-            <button type="button" onClick={() => setActiveView('patient')} className="whitespace-nowrap shrink-0 hover:text-slate-900 dark:hover:text-white">Find Doctors</button>
-            <button type="button" onClick={() => scrollToSection('symptom-helper')} className="whitespace-nowrap shrink-0 hover:text-slate-900 dark:hover:text-white">AI Assistant</button>
-            <button type="button" onClick={() => setActiveView('support')} className="whitespace-nowrap shrink-0 hover:text-slate-900 dark:hover:text-white">Support</button>
-            <button type="button" onClick={() => openAuthScreen('login')} className="whitespace-nowrap shrink-0 hover:text-slate-900 dark:hover:text-white">Sign In</button>
+            <button type="button" onClick={() => navigateView('patient')} className="whitespace-nowrap shrink-0 hover:text-slate-900 dark:hover:text-white">Patients</button>
+            <button type="button" onClick={() => navigateView('doctor')} className="whitespace-nowrap shrink-0 hover:text-slate-900 dark:hover:text-white">Doctor</button>
+            <button type="button" onClick={() => navigateView('admin')} className="whitespace-nowrap shrink-0 hover:text-slate-900 dark:hover:text-white">Admin</button>
+            <button type="button" onClick={() => navigateView('support')} className="whitespace-nowrap shrink-0 hover:text-slate-900 dark:hover:text-white">Support</button>
           </>
         )}
         {user?.role === 'PATIENT' && (
@@ -1456,23 +1537,23 @@ export default function App() {
             <button type="button" onClick={() => scrollToSection('doctor-directory-pane')} className="whitespace-nowrap shrink-0 hover:text-slate-900 dark:hover:text-white">Find Doctors</button>
             <button type="button" onClick={() => scrollToSection('symptom-helper')} className="whitespace-nowrap shrink-0 hover:text-slate-900 dark:hover:text-white">AI Assistant</button>
             <button type="button" onClick={() => scrollToSection('appointments-section')} className="whitespace-nowrap shrink-0 hover:text-slate-900 dark:hover:text-white">My Visits</button>
-            <button type="button" onClick={() => setActiveView('support')} className="whitespace-nowrap shrink-0 hover:text-slate-900 dark:hover:text-white">Support</button>
+            <button type="button" onClick={() => navigateView('support')} className="whitespace-nowrap shrink-0 hover:text-slate-900 dark:hover:text-white">Support</button>
           </>
         )}
         {user?.role === 'DOCTOR' && (
           <>
-            <button type="button" onClick={() => setActiveView('doctor')} className="whitespace-nowrap shrink-0 hover:text-slate-900 dark:hover:text-white">My Schedule</button>
-            <button type="button" onClick={() => setActiveView('patient')} className="whitespace-nowrap shrink-0 hover:text-slate-900 dark:hover:text-white">Doctor Directory</button>
-            <button type="button" onClick={() => setActiveView('support')} className="whitespace-nowrap shrink-0 hover:text-slate-900 dark:hover:text-white">Support</button>
-            <button type="button" onClick={() => setActiveView('devops')} className="whitespace-nowrap shrink-0 hover:text-slate-900 dark:hover:text-white">Architecture</button>
+            <button type="button" onClick={() => navigateView('doctor')} className="whitespace-nowrap shrink-0 hover:text-slate-900 dark:hover:text-white">My Schedule</button>
+            <button type="button" onClick={() => navigateView('patient')} className="whitespace-nowrap shrink-0 hover:text-slate-900 dark:hover:text-white">Doctor Directory</button>
+            <button type="button" onClick={() => navigateView('support')} className="whitespace-nowrap shrink-0 hover:text-slate-900 dark:hover:text-white">Support</button>
+            <button type="button" onClick={() => navigateView('devops')} className="whitespace-nowrap shrink-0 hover:text-slate-900 dark:hover:text-white">Architecture</button>
           </>
         )}
         {user?.role === 'ADMIN' && (
           <>
-            <button type="button" onClick={() => setActiveView('admin')} className="whitespace-nowrap shrink-0 hover:text-slate-900 dark:hover:text-white">Admin Overview</button>
-            <button type="button" onClick={() => setActiveView('support')} className="whitespace-nowrap shrink-0 hover:text-slate-900 dark:hover:text-white">Support Desk</button>
-            <button type="button" onClick={() => setActiveView('patient')} className="whitespace-nowrap shrink-0 hover:text-slate-900 dark:hover:text-white">Doctor Directory</button>
-            <button type="button" onClick={() => setActiveView('devops')} className="whitespace-nowrap shrink-0 hover:text-slate-900 dark:hover:text-white">Architecture</button>
+            <button type="button" onClick={() => navigateView('admin')} className="whitespace-nowrap shrink-0 hover:text-slate-900 dark:hover:text-white">Admin Overview</button>
+            <button type="button" onClick={() => navigateView('support')} className="whitespace-nowrap shrink-0 hover:text-slate-900 dark:hover:text-white">Support Desk</button>
+            <button type="button" onClick={() => navigateView('patient')} className="whitespace-nowrap shrink-0 hover:text-slate-900 dark:hover:text-white">Doctor Directory</button>
+            <button type="button" onClick={() => navigateView('devops')} className="whitespace-nowrap shrink-0 hover:text-slate-900 dark:hover:text-white">Architecture</button>
           </>
         )}
       </div>
@@ -1484,7 +1565,7 @@ export default function App() {
           <AuthScreen
             initialMode={authInitialMode}
             onAuthSuccess={handleAuthSuccess}
-            onBrowseAsGuest={() => setActiveView('patient')}
+            onBrowseAsGuest={() => navigateView('patient')}
           />
         )}
 
@@ -2084,6 +2165,35 @@ export default function App() {
         {/* DOCTOR CONSOLE */}
         {activeView === 'doctor' && (
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+            {user?.role !== 'DOCTOR' && (
+              <div className="bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <h2 className="text-sm font-semibold text-amber-900 dark:text-amber-200">
+                    Sign in with a Doctor account to approve visits and chat with patients
+                  </h2>
+                  <p className="text-xs text-amber-800 dark:text-amber-300">
+                    You are viewing the Doctor Console route (`/doctor`). Load the sample doctor workspace or sign in with your clinician credentials.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => handleQuickDemoRoleLogin('DOCTOR')}
+                    className="px-4 py-2 bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold rounded-xl cursor-pointer whitespace-nowrap"
+                  >
+                    Use Demo Doctor
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openAuthScreen('login')}
+                    className="px-4 py-2 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 border border-slate-300 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-xs font-semibold rounded-xl cursor-pointer whitespace-nowrap"
+                  >
+                    Sign In
+                  </button>
+                </div>
+              </div>
+            )}
+
             <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 sm:p-8 flex flex-col md:flex-row md:items-center justify-between gap-6">
               <div className="space-y-1.5">
                 <p className="text-sm font-medium text-teal-700 dark:text-teal-400">Doctor Schedule</p>
@@ -2276,6 +2386,35 @@ export default function App() {
         {/* ADMIN OVERVIEW */}
         {activeView === 'admin' && (
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+            {user?.role !== 'ADMIN' && (
+              <div className="bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <h2 className="text-sm font-semibold text-amber-900 dark:text-amber-200">
+                    Sign in as Clinic Admin for full management access
+                  </h2>
+                  <p className="text-xs text-amber-800 dark:text-amber-300">
+                    You are viewing the Admin route (`/admin`). Sign in with your Admin credentials or load the demo Admin account to respond to support tickets and moderate accounts.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => handleQuickDemoRoleLogin('ADMIN')}
+                    className="px-4 py-2 bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold rounded-xl cursor-pointer whitespace-nowrap"
+                  >
+                    Use Demo Admin
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openAuthScreen('login')}
+                    className="px-4 py-2 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 border border-slate-300 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-xs font-semibold rounded-xl cursor-pointer whitespace-nowrap"
+                  >
+                    Sign In
+                  </button>
+                </div>
+              </div>
+            )}
+
             <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 sm:p-8 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
               <div className="space-y-2">
                 <p className="text-sm font-medium text-teal-700 dark:text-teal-400">Clinic Administration</p>
@@ -2288,7 +2427,7 @@ export default function App() {
               </div>
               <button
                 type="button"
-                onClick={() => setActiveView('support')}
+                onClick={() => navigateView('support')}
                 className="px-4 py-2.5 bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold rounded-xl inline-flex items-center gap-2 transition-colors cursor-pointer whitespace-nowrap shrink-0 self-start lg:self-auto"
               >
                 <LifeBuoy className="w-4 h-4" />
@@ -2826,31 +2965,38 @@ export default function App() {
       <footer className="bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400 text-xs py-6 mt-12">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4">
           <span>© 2026 MediConnect. Online Doctor Consultation Platform.</span>
-          <div className="flex items-center gap-6">
+          <div className="flex flex-wrap items-center gap-6">
             <button
               type="button"
-              onClick={() => setActiveView('patient')}
+              onClick={() => navigateView('patient')}
               className="hover:text-slate-900 dark:hover:text-slate-100 cursor-pointer"
             >
-              Find Doctors
+              Patients
             </button>
             <button
               type="button"
-              onClick={() => setActiveView('support')}
+              onClick={() => navigateView('doctor')}
               className="hover:text-slate-900 dark:hover:text-slate-100 cursor-pointer"
             >
-              Support Portal
+              Doctor
             </button>
             <button
               type="button"
-              onClick={() => openAuthScreen('login')}
+              onClick={() => navigateView('admin')}
               className="hover:text-slate-900 dark:hover:text-slate-100 cursor-pointer"
             >
-              Log In / Sign Up
+              Admin
             </button>
             <button
               type="button"
-              onClick={() => setActiveView('devops')}
+              onClick={() => navigateView('support')}
+              className="hover:text-slate-900 dark:hover:text-slate-100 cursor-pointer"
+            >
+              Support
+            </button>
+            <button
+              type="button"
+              onClick={() => navigateView('devops')}
               className="hover:text-slate-900 dark:hover:text-slate-100 cursor-pointer"
             >
               Architecture
