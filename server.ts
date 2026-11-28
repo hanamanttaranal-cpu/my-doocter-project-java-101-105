@@ -14,7 +14,7 @@ let cachedKey = '';
 let cachedClient: GoogleGenAI | null = null;
 
 function getAiClient(): GoogleGenAI | null {
-  const rawKey = (process.env.GEMINI_API_KEY || '')
+  const rawKey = (process.env.GEMINI_API_KEY || process.env.API_KEY || '')
     .trim()
     .replace(/^["']|["']$/g, '')
     .trim();
