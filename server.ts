@@ -1,7 +1,9 @@
 import express from 'express';
+import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import dotenv from 'dotenv';
+import { WebSocketServer, WebSocket } from 'ws';
 import { GoogleGenAI, Type } from '@google/genai';
 
 dotenv.config();
@@ -176,6 +178,66 @@ let chatMessages = [
 let feedbacks = [
   { id: 1, patientName: "Aria Montgomery", doctorName: "Dr. Sarah Jenkins", rating: 5, comment: "Incredibly attentive and thorough. Explained complex cardiac tests with exceptional clarity." },
   { id: 2, patientName: "Michael Thorne", doctorName: "Dr. David Chen", rating: 4, comment: "Prompt and professional. Provided comforting guidance for persistent migraines." }
+];
+
+let supportTickets = [
+  {
+    id: 101,
+    requesterId: 1,
+    requesterName: "John Carter",
+    requesterEmail: "patient@mediconnect.pro",
+    requesterRole: "PATIENT",
+    category: "Medical Records",
+    priority: "Normal",
+    subject: "Attaching updated ECG report to cardiology booking",
+    status: "Open",
+    createdAt: "2026-05-23 09:40",
+    updatedAt: "2026-05-23 09:40",
+    messages: [
+      {
+        id: 1,
+        ticketId: 101,
+        senderId: 1,
+        senderName: "John Carter",
+        senderRole: "PATIENT",
+        text: "I booked a Cardiology visit for May 24 and want to make sure my second ECG PDF is visible to Dr. Jenkins before the call.",
+        timestamp: "09:40 AM"
+      }
+    ]
+  },
+  {
+    id: 102,
+    requesterId: 2,
+    requesterName: "Dr. Sarah Jenkins",
+    requesterEmail: "doctor@mediconnect.pro",
+    requesterRole: "DOCTOR",
+    category: "Account & Verification",
+    priority: "Normal",
+    subject: "Update Friday afternoon clinic availability hours",
+    status: "In Progress",
+    createdAt: "2026-05-22 14:15",
+    updatedAt: "2026-05-22 15:02",
+    messages: [
+      {
+        id: 2,
+        ticketId: 102,
+        senderId: 2,
+        senderName: "Dr. Sarah Jenkins",
+        senderRole: "DOCTOR",
+        text: "Could clinic administration extend my Friday online hours until 17:00 starting next week?",
+        timestamp: "02:15 PM"
+      },
+      {
+        id: 3,
+        ticketId: 102,
+        senderId: 3,
+        senderName: "Director Vance",
+        senderRole: "ADMIN",
+        text: "Received, Dr. Jenkins. We are updating your roster schedule for next week and will confirm shortly.",
+        timestamp: "03:02 PM"
+      }
+    ]
+  }
 ];
 
 async function startServer() {
@@ -353,6 +415,10 @@ async function startServer() {
     }
   });
 
+  // WebSocket room & broadcast helpers (initialized after HTTP server creation)
+  let broadcastToRoom = (_appointmentId: number, _payload: unknown, _excludeSocket?: WebSocket) => {};
+  let broadcastGlobal = (_payload: unknown) => {};
+
   // 8. Place Appointment Booking Request
   app.post('/api/appointments', (req, res) => {
     const { patientId, doctorId, date, notes, medicalReportUrl } = req.body;
@@ -377,6 +443,7 @@ async function startServer() {
     };
 
     appointments.push(newAppointment);
+    broadcastGlobal({ type: 'appointment:sync', appointment: newAppointment });
     res.status(201).json(newAppointment);
   });
 
@@ -387,6 +454,7 @@ async function startServer() {
     const apt = appointments.find(a => a.id === parseInt(id));
     if (apt) {
       apt.status = status;
+      broadcastGlobal({ type: 'appointment:sync', appointment: apt });
       return res.json(apt);
     }
     return res.status(404).json({ error: "Target appointment not found." });
@@ -400,57 +468,53 @@ async function startServer() {
     res.json(msgs);
   });
 
-  // 11. Send Chat Message and Trigger Instant Automated/AI Doctor response
+  // 11. Send Chat Message (Authoritative Server State + Real-Time WebSocket Broadcast)
   app.post('/api/chat', (req, res) => {
     const { appointmentId, senderId, senderName, text } = req.body;
     const aid = parseInt(appointmentId);
-    
-    // Save patient message
-    const patientMsg = {
+    const cleanText = String(text || '').trim();
+    if (!aid || !cleanText) {
+      return res.status(400).json({ error: "Appointment ID and message text are required." });
+    }
+
+    const msg = {
       id: chatMessages.length + 1,
       appointmentId: aid,
       senderId: parseInt(senderId),
-      senderName,
-      text,
+      senderName: String(senderName || 'User'),
+      text: cleanText,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       type: "text"
     };
-    chatMessages.push(patientMsg);
+    chatMessages.push(msg);
 
-    res.json(patientMsg);
-
-    // Simulate doctor reply only when a patient sends a message
-    const apt = appointments.find(a => a.id === aid);
-    const senderUser = users.find(u => u.id === patientMsg.senderId);
-    if (apt && senderUser?.role !== 'DOCTOR') {
-      setTimeout(() => {
-        const docAnswers = [
-          "Thank you for sharing those details. I have added them to your visit notes.",
-          "I am reviewing your information now. Please let me know when you started noticing these symptoms.",
-          "Please keep monitoring how you feel and let me know if anything worsens before our appointment.",
-          "Stay hydrated and avoid strenuous activity until we speak during your scheduled visit.",
-          "Got it — I see your uploaded file and will walk through the results with you."
-        ];
-        const randomAnswer = docAnswers[Math.floor(Math.random() * docAnswers.length)];
-        const doctorMsg = {
-          id: chatMessages.length + 1,
-          appointmentId: aid,
-          senderId: 2,
-          senderName: apt.doctorName,
-          text: randomAnswer,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          type: "text"
-        };
-        chatMessages.push(doctorMsg);
-      }, 2000);
-    }
+    broadcastToRoom(aid, { type: 'chat:message', message: msg });
+    return res.json(msg);
   });
 
-  // 12. Admin Moderation Capabilities (Block clinicians, edit profiles, moderate reviews)
-  app.get('/api/admin/moderation', (req, res) => {
+  // 12. Admin Moderation Capabilities (Doctors, Patients list with visit counts, Reviews)
+  app.get('/api/admin/moderation', (_req, res) => {
+    const patientSummaries = users
+      .filter(u => u.role === "PATIENT")
+      .map(u => {
+        const patientApts = appointments.filter(a => a.patientId === u.id);
+        const approvedCount = patientApts.filter(a => a.status === "Approved").length;
+        const latestApt = patientApts[patientApts.length - 1];
+        return {
+          id: u.id,
+          fullName: u.fullName,
+          email: u.email,
+          role: u.role,
+          profileImageUrl: u.profileImageUrl,
+          totalVisits: patientApts.length,
+          approvedVisits: approvedCount,
+          lastVisitDate: latestApt ? latestApt.date : null
+        };
+      });
+
     res.json({
       doctors: doctors,
-      patients: users.filter(u => u.role === "PATIENT"),
+      patients: patientSummaries,
       feedbacks: feedbacks
     });
   });
@@ -469,6 +533,164 @@ async function startServer() {
     const id = parseInt(req.params.id);
     feedbacks = feedbacks.filter(f => f.id !== id);
     res.json({ success: true, feedbacks });
+  });
+
+  // 12b. Support Portal APIs (Patients, Doctors, Admin)
+  app.get('/api/support/tickets', (req, res) => {
+    const uid = parseInt(String(req.query.userId || '0'), 10);
+    const role = String(req.query.role || '').toUpperCase();
+
+    if (role === 'ADMIN') {
+      return res.json([...supportTickets].sort((a, b) => b.id - a.id));
+    }
+
+    const user = users.find(u => u.id === uid);
+    const filtered = supportTickets.filter(
+      t =>
+        t.requesterId === uid ||
+        (user?.email && t.requesterEmail.toLowerCase() === user.email.toLowerCase())
+    );
+    return res.json([...filtered].sort((a, b) => b.id - a.id));
+  });
+
+  app.post('/api/support/tickets', (req, res) => {
+    const {
+      requesterId,
+      requesterName,
+      requesterEmail,
+      requesterRole,
+      category,
+      priority,
+      subject,
+      message,
+    } = req.body || {};
+
+    const uid = parseInt(String(requesterId || '0'), 10);
+    const cleanSubject = String(subject || '').trim();
+    const cleanMessage = String(message || '').trim();
+    const userRecord = users.find(u => u.id === uid);
+
+    if (!uid || !cleanSubject || !cleanMessage) {
+      return res.status(400).json({ error: "Subject and message are required to open a support ticket." });
+    }
+
+    const normalizedRole =
+      (String(requesterRole || userRecord?.role || 'PATIENT').toUpperCase() === 'DOCTOR')
+        ? 'DOCTOR'
+        : 'PATIENT';
+
+    const nowStamp = `${new Date().toISOString().split('T')[0]} ${new Date().toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    })}`;
+    const timeOnly = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const nextTicketId = supportTickets.length > 0 ? Math.max(...supportTickets.map(t => t.id)) + 1 : 101;
+    const allMsgs = supportTickets.flatMap(t => t.messages);
+    const nextMsgId = allMsgs.length > 0 ? Math.max(...allMsgs.map(m => m.id)) + 1 : 1;
+
+    const newTicket = {
+      id: nextTicketId,
+      requesterId: uid,
+      requesterName: String(requesterName || userRecord?.fullName || 'MediConnect User'),
+      requesterEmail: String(requesterEmail || userRecord?.email || ''),
+      requesterRole: normalizedRole as 'PATIENT' | 'DOCTOR',
+      category: String(category || 'Technical Issue'),
+      priority: String(priority || 'Normal'),
+      subject: cleanSubject,
+      status: 'Open',
+      createdAt: nowStamp,
+      updatedAt: nowStamp,
+      messages: [
+        {
+          id: nextMsgId,
+          ticketId: nextTicketId,
+          senderId: uid,
+          senderName: String(requesterName || userRecord?.fullName || 'MediConnect User'),
+          senderRole: normalizedRole,
+          text: cleanMessage,
+          timestamp: timeOnly,
+        },
+      ],
+    };
+
+    supportTickets.unshift(newTicket);
+    broadcastGlobal({ type: 'support:sync', ticket: newTicket });
+    return res.status(201).json(newTicket);
+  });
+
+  app.post('/api/support/tickets/:id/messages', (req, res) => {
+    const ticketId = parseInt(req.params.id, 10);
+    const ticket = supportTickets.find(t => t.id === ticketId);
+    if (!ticket) {
+      return res.status(404).json({ error: "Support ticket not found." });
+    }
+
+    const { senderId, senderName, senderRole, text } = req.body || {};
+    const cleanText = String(text || '').trim();
+    if (!cleanText) {
+      return res.status(400).json({ error: "Reply message cannot be empty." });
+    }
+
+    const uid = parseInt(String(senderId || '0'), 10);
+    const role = String(senderRole || 'PATIENT').toUpperCase();
+    const allMsgs = supportTickets.flatMap(t => t.messages);
+    const nextMsgId = allMsgs.length > 0 ? Math.max(...allMsgs.map(m => m.id)) + 1 : 1;
+    const nowStamp = `${new Date().toISOString().split('T')[0]} ${new Date().toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    })}`;
+
+    const newMsg = {
+      id: nextMsgId,
+      ticketId,
+      senderId: uid,
+      senderName: String(senderName || 'Support User'),
+      senderRole: role,
+      text: cleanText,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    };
+
+    ticket.messages.push(newMsg);
+    ticket.updatedAt = nowStamp;
+    if (role === 'ADMIN' && ticket.status === 'Open') {
+      ticket.status = 'In Progress';
+    } else if (role !== 'ADMIN' && ticket.status === 'Resolved') {
+      ticket.status = 'Open';
+    }
+
+    broadcastGlobal({
+      type: 'support:message',
+      ticketId,
+      message: newMsg,
+      status: ticket.status,
+      updatedAt: ticket.updatedAt,
+    });
+    return res.status(201).json({ message: newMsg, ticket });
+  });
+
+  app.post('/api/support/tickets/:id/status', (req, res) => {
+    const ticketId = parseInt(req.params.id, 10);
+    const ticket = supportTickets.find(t => t.id === ticketId);
+    if (!ticket) {
+      return res.status(404).json({ error: "Support ticket not found." });
+    }
+
+    const status = String(req.body?.status || '').trim();
+    if (!['Open', 'In Progress', 'Resolved'].includes(status)) {
+      return res.status(400).json({ error: "Invalid support status." });
+    }
+
+    ticket.status = status;
+    ticket.updatedAt = `${new Date().toISOString().split('T')[0]} ${new Date().toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    })}`;
+
+    broadcastGlobal({ type: 'support:sync', ticket });
+    return res.json(ticket);
   });
 
   // 13. Recharts-friendly Analytics endpoint for interactive dashboards
@@ -725,7 +947,216 @@ Your role:
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  // Create shared HTTP server for Express + WebSockets on port 3000
+  const httpServer = http.createServer(app);
+  const wss = new WebSocketServer({ server: httpServer, path: '/ws/chat' });
+
+  interface WsClientMeta {
+    userId?: number;
+    fullName?: string;
+    role?: string;
+    appointmentId?: number;
+  }
+
+  const clientMeta = new Map<WebSocket, WsClientMeta>();
+  const chatRooms = new Map<number, Set<WebSocket>>();
+
+  const emitPresenceForRoom = (aid: number) => {
+    const room = chatRooms.get(aid);
+    if (!room) return;
+    const participantsMap = new Map<number, { userId: number; fullName: string; role: string }>();
+    room.forEach((ws) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        const meta = clientMeta.get(ws);
+        if (meta?.userId) {
+          participantsMap.set(meta.userId, {
+            userId: meta.userId,
+            fullName: meta.fullName || 'User',
+            role: meta.role || 'PATIENT',
+          });
+        }
+      }
+    });
+    const payload = JSON.stringify({
+      type: 'chat:presence',
+      appointmentId: aid,
+      participants: Array.from(participantsMap.values()),
+    });
+    room.forEach((ws) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(payload);
+      }
+    });
+  };
+
+  const leaveCurrentRoom = (ws: WebSocket) => {
+    const meta = clientMeta.get(ws);
+    if (meta?.appointmentId) {
+      const prevRoom = chatRooms.get(meta.appointmentId);
+      if (prevRoom) {
+        prevRoom.delete(ws);
+        if (prevRoom.size === 0) {
+          chatRooms.delete(meta.appointmentId);
+        } else {
+          emitPresenceForRoom(meta.appointmentId);
+        }
+      }
+      meta.appointmentId = undefined;
+    }
+  };
+
+  broadcastToRoom = (appointmentId: number, payload: unknown, excludeSocket?: WebSocket) => {
+    const room = chatRooms.get(appointmentId);
+    if (!room) return;
+    const raw = JSON.stringify(payload);
+    room.forEach((ws) => {
+      if (ws !== excludeSocket && ws.readyState === WebSocket.OPEN) {
+        ws.send(raw);
+      }
+    });
+  };
+
+  broadcastGlobal = (payload: unknown) => {
+    const raw = JSON.stringify(payload);
+    wss.clients.forEach((ws) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(raw);
+      }
+    });
+  };
+
+  wss.on('connection', (ws) => {
+    clientMeta.set(ws, {});
+
+    ws.on('message', (rawData) => {
+      try {
+        const event = JSON.parse(rawData.toString());
+        const eventType = String(event?.type || '');
+
+        if (eventType === 'chat:join') {
+          const aid = Number(event.appointmentId);
+          if (!aid) return;
+          leaveCurrentRoom(ws);
+          const meta = clientMeta.get(ws) || {};
+          meta.userId = Number(event.userId) || meta.userId;
+          meta.fullName = String(event.fullName || meta.fullName || 'User');
+          meta.role = String(event.role || meta.role || 'PATIENT');
+          meta.appointmentId = aid;
+          clientMeta.set(ws, meta);
+
+          if (!chatRooms.has(aid)) {
+            chatRooms.set(aid, new Set());
+          }
+          chatRooms.get(aid)!.add(ws);
+
+          ws.send(
+            JSON.stringify({
+              type: 'chat:history',
+              appointmentId: aid,
+              messages: chatMessages.filter((m) => m.appointmentId === aid),
+            })
+          );
+          emitPresenceForRoom(aid);
+          return;
+        }
+
+        if (eventType === 'chat:leave') {
+          leaveCurrentRoom(ws);
+          return;
+        }
+
+        if (eventType === 'chat:typing') {
+          const aid = Number(event.appointmentId);
+          if (!aid) return;
+          broadcastToRoom(
+            aid,
+            {
+              type: 'chat:typing',
+              appointmentId: aid,
+              userId: Number(event.userId),
+              fullName: String(event.fullName || 'User'),
+              role: String(event.role || 'PATIENT'),
+              isTyping: Boolean(event.isTyping),
+            },
+            ws
+          );
+          return;
+        }
+
+        if (eventType === 'chat:send') {
+          const aid = Number(event.appointmentId);
+          const cleanText = String(event.text || '').trim();
+          if (!aid || !cleanText) return;
+
+          const newMsg = {
+            id: chatMessages.length + 1,
+            appointmentId: aid,
+            senderId: Number(event.senderId),
+            senderName: String(event.senderName || 'User'),
+            text: cleanText,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            type: 'text',
+          };
+          chatMessages.push(newMsg);
+
+          // Broadcast authoritative message to all clients in the appointment room
+          broadcastToRoom(aid, { type: 'chat:message', message: newMsg });
+          return;
+        }
+
+        if (eventType === 'support:send') {
+          const ticketId = Number(event.ticketId);
+          const cleanText = String(event.text || '').trim();
+          const ticket = supportTickets.find(t => t.id === ticketId);
+          if (!ticket || !cleanText) return;
+
+          const role = String(event.senderRole || 'PATIENT').toUpperCase();
+          const allMsgs = supportTickets.flatMap(t => t.messages);
+          const nextMsgId = allMsgs.length > 0 ? Math.max(...allMsgs.map(m => m.id)) + 1 : 1;
+          const nowStamp = `${new Date().toISOString().split('T')[0]} ${new Date().toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false,
+          })}`;
+
+          const newMsg = {
+            id: nextMsgId,
+            ticketId,
+            senderId: Number(event.senderId),
+            senderName: String(event.senderName || 'Support User'),
+            senderRole: role,
+            text: cleanText,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          };
+
+          ticket.messages.push(newMsg);
+          ticket.updatedAt = nowStamp;
+          if (role === 'ADMIN' && ticket.status === 'Open') {
+            ticket.status = 'In Progress';
+          } else if (role !== 'ADMIN' && ticket.status === 'Resolved') {
+            ticket.status = 'Open';
+          }
+
+          broadcastGlobal({
+            type: 'support:message',
+            ticketId,
+            message: newMsg,
+            status: ticket.status,
+            updatedAt: ticket.updatedAt,
+          });
+        }
+      } catch {
+        // Ignore malformed WebSocket payloads
+      }
+    });
+
+    ws.on('close', () => {
+      leaveCurrentRoom(ws);
+      clientMeta.delete(ws);
+    });
+  });
+
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`[MediConnect Server Host] Running online at: http://localhost:${PORT}`);
   });
 }

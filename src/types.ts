@@ -54,6 +54,59 @@ export interface TriageResult {
   questionsToAsk: string[];
 }
 
+export interface ChatPresenceUser {
+  userId: number;
+  fullName: string;
+  role: string;
+}
+
+export interface AdminPatientSummary {
+  id: number;
+  fullName: string;
+  email: string;
+  role: string;
+  profileImageUrl: string;
+  totalVisits: number;
+  approvedVisits: number;
+  lastVisitDate: string | null;
+}
+
+export type SupportTicketCategory =
+  | 'Appointments'
+  | 'Billing & Payments'
+  | 'Technical Issue'
+  | 'Account & Verification'
+  | 'Medical Records';
+
+export type SupportTicketPriority = 'Low' | 'Normal' | 'Urgent';
+
+export type SupportTicketStatus = 'Open' | 'In Progress' | 'Resolved';
+
+export interface SupportTicketMessage {
+  id: number;
+  ticketId: number;
+  senderId: number;
+  senderName: string;
+  senderRole: UserRole;
+  text: string;
+  timestamp: string;
+}
+
+export interface SupportTicket {
+  id: number;
+  requesterId: number;
+  requesterName: string;
+  requesterEmail: string;
+  requesterRole: 'PATIENT' | 'DOCTOR';
+  category: SupportTicketCategory;
+  priority: SupportTicketPriority;
+  subject: string;
+  status: SupportTicketStatus;
+  createdAt: string;
+  updatedAt: string;
+  messages: SupportTicketMessage[];
+}
+
 export interface DevFileNode {
   name: string;
   type: 'file' | 'directory';

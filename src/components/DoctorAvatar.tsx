@@ -60,7 +60,7 @@ export const DoctorAvatar: React.FC<DoctorAvatarProps> = ({
         alt={name}
         referrerPolicy="no-referrer"
         onError={() => setImgFailed(true)}
-        className={`${sizeClass} rounded-full object-cover border border-slate-200 shrink-0 bg-slate-100`}
+        className={`${sizeClass} rounded-full object-cover border border-slate-200 dark:border-slate-700 shrink-0 bg-slate-100 dark:bg-slate-800`}
       />
     );
   }
@@ -68,7 +68,7 @@ export const DoctorAvatar: React.FC<DoctorAvatarProps> = ({
   return (
     <div
       aria-label={name}
-      className={`${sizeClass} rounded-full bg-teal-50 text-teal-800 border border-teal-200 flex items-center justify-center font-semibold text-xs shrink-0 select-none`}
+      className={`${sizeClass} rounded-full bg-teal-50 dark:bg-teal-950/60 text-teal-800 dark:text-teal-300 border border-teal-200 dark:border-teal-800 flex items-center justify-center font-semibold text-xs shrink-0 select-none`}
     >
       {initials}
     </div>
